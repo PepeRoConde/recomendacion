@@ -1,25 +1,3 @@
-"""
-    main.py - MPD playlist recommendation
-
-    Usage
-    -----
-    # Single playlist:
-        python main.py --path dataset/data/train --pid 0
-
-    # Quick mode:
-        python main.py --path dataset/data/train --pid 0 --quick --top 20
-
-    # Recommend for ALL playlists (matrix-matrix multiply, chunked):
-        python main.py --path dataset/data/train --all --top 10
-
-    # Evaluate precision@N and recall@N on the held-out set:
-        python main.py --path dataset/data/train --evaluate dataset/data/eval --top 10
-
-    # Save/load matrix to skip re-parsing:
-        python main.py --path dataset/data/train --pid 0 --save-matrix matrix
-        python main.py --load-matrix matrix --pid 0
-"""
-
 import sys
 import argparse
 import pickle
@@ -27,9 +5,9 @@ import pathlib
 import numpy as np
 import scipy.sparse
 
-from src.utils         import load_and_build, recommend
-from src.recommend_all import recommend_all
-from src.evaluate      import load_eval, evaluate, print_results
+from src.utils.load_and_build import load_and_build
+from src.models import recommend, recommend_all
+from src.evaluation.evaluate import load_eval, evaluate, print_results
 
 
 def parse_args():

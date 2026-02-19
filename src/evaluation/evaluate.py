@@ -1,35 +1,61 @@
 """
-    evaluate.py - Precision@N and Recall@N on the held-out eval set.
+    src/evaluation/evaluate.py
 
-    Metrics are reported per num_samples group and overall.
+    Metrics
+    -------
+    R-Precision
+        |predicted ∩ truth[:top_n]| / |truth[:top_n]|
+        Rewards total relevant retrieved regardless of order.
+
+    NDCG  (Normalised Discounted Cumulative Gain)
+        DCG  = Σ 1/log2(i+2)  for each relevant track at rank i (0-indexed)
+        IDCG = DCG of a perfect ranking (relevant tracks first)
+        NDCG = DCG / IDCG   (0 if no relevant tracks)
+
+    Recommended Songs Clicks
+        floor(rank_of_first_relevant / 10)   (0-indexed rank, buckets of 10)
+        51 if no relevant track found in predictions.
+        Lower is better.
+
+    All three metrics are averaged across playlists and reported per
+    num_samples group and overall.
+
+    evaluate() delegates scoring to the blended model via recommend_all()
+    so that the alpha parameter is respected.
 """
 
 import json
 import os
+import math
 import numpy as np
 from collections import defaultdict
 from tqdm import tqdm
 
 
+# --------------------------------------------------------------------------- #
+#  Data loading                                                                #
+# --------------------------------------------------------------------------- #
+
 def load_eval(eval_dir):
     """
-    Loads the eval split.
+    Load the eval split.
 
     Returns
     -------
-    ground_truth  : dict  {pid -> set of track_uris}
-    pid_to_samples: dict  {pid -> num_samples}  (for group breakdown)
+    ground_truth   : dict  {pid -> list of track_uris}   ordered, capped later
+    pid_to_samples : dict  {pid -> num_samples}
     """
-    eval_path = os.path.join(eval_dir, "test_eval_playlists.json")
+    eval_path  = os.path.join(eval_dir, "test_eval_playlists.json")
     input_path = os.path.join(eval_dir, "test_input_playlists.json")
 
-    with open(eval_path, encoding="utf-8") as f:
-        eval_data = json.load(f)
+    with open(eval_path,  encoding="utf-8") as f:
+        eval_data  = json.load(f)
     with open(input_path, encoding="utf-8") as f:
         input_data = json.load(f)
 
+    # Keep as list (order doesn't matter for these metrics, but consistent)
     ground_truth = {
-        p["pid"]: {t["track_uri"] for t in p["tracks"]}
+        p["pid"]: [t["track_uri"] for t in p["tracks"]]
         for p in eval_data["playlists"]
     }
     pid_to_samples = {
@@ -39,17 +65,81 @@ def load_eval(eval_dir):
     return ground_truth, pid_to_samples
 
 
-def evaluate(ground_truth, pid_to_samples, pid_to_row, A, track_to_col,
-             top_n=10, chunk_size=500):
+# --------------------------------------------------------------------------- #
+#  Per-playlist metric functions                                               #
+# --------------------------------------------------------------------------- #
+
+def _r_precision(predicted_ranked, truth_set):
     """
-    Computes Precision@N and Recall@N, broken down by num_samples group.
+    R-Precision: hits in predicted / |truth_set|.
+    predicted_ranked is already capped to top_n before calling.
+    truth_set        is already capped to top_n before calling.
+    """
+    if not truth_set:
+        return 0.0
+    hits = sum(1 for t in predicted_ranked if t in truth_set)
+    return hits / len(truth_set)
+
+
+def _ndcg(predicted_ranked, truth_set):
+    """
+    NDCG over the full predicted list.
+    truth_set is already capped to top_n.
+    """
+    if not truth_set:
+        return 0.0
+
+    dcg = sum(
+        1.0 / math.log2(i + 2)
+        for i, t in enumerate(predicted_ranked)
+        if t in truth_set
+    )
+
+    # Ideal: all relevant tracks placed first
+    n_ideal = min(len(truth_set), len(predicted_ranked))
+    idcg    = sum(1.0 / math.log2(i + 2) for i in range(n_ideal))
+
+    return dcg / idcg if idcg > 0 else 0.0
+
+
+def _clicks(predicted_ranked, truth_set):
+    """
+    Recommended Songs Clicks: floor(rank_of_first_relevant / 10).
+    Returns 51 if no relevant track found.
+    """
+    for rank, t in enumerate(predicted_ranked):
+        if t in truth_set:
+            return rank // 10
+    return 51
+
+
+# --------------------------------------------------------------------------- #
+#  Main evaluation loop                                                        #
+# --------------------------------------------------------------------------- #
+
+def evaluate(ground_truth, pid_to_samples, pid_to_row, A, track_to_col,
+             top_n=500, chunk_size=500, alpha=0.5):
+    """
+    Evaluate R-Precision, NDCG, and Clicks using the blended model.
+
+    Parameters
+    ----------
+    ground_truth   : {pid -> list of track_uris}
+    pid_to_samples : {pid -> num_samples}
+    pid_to_row     : {pid -> matrix row index}
+    A              : sparse playlist-track matrix
+    track_to_col   : {track_uri -> col index}
+    top_n          : recommendation list length (default 500, per challenge spec)
+    chunk_size     : playlists per batch
+    alpha          : CF vs reputation blend weight
 
     Returns
     -------
-    overall   : (precision, recall)
-    by_group  : dict  {num_samples -> (precision, recall, count)}
+    overall  : dict  {metric -> mean_value}
+    by_group : dict  {num_samples -> {metric -> mean_value, 'n' -> count}}
     """
-    col_to_track = {v: k for k, v in track_to_col.items()}
+    # Import here to avoid circular imports at module load time
+    from src.models.blend import recommend_all
 
     test_pids = [pid for pid in ground_truth if pid in pid_to_row]
     missing   = [pid for pid in ground_truth if pid not in pid_to_row]
@@ -60,66 +150,71 @@ def evaluate(ground_truth, pid_to_samples, pid_to_row, A, track_to_col,
     if missing:
         print(f"[warn] {len(missing)} test pids not in matrix — skipped")
 
-    # accumulators per group
-    group_hits      = defaultdict(float)
-    group_precision = defaultdict(float)
-    group_recall    = defaultdict(float)
-    group_count     = defaultdict(int)
+    # Get blended recommendations for all test playlists in one pass
+    print(f"[evaluate] running blended model (alpha={alpha:.2f}) …")
+    all_recs = recommend_all(
+        A, pid_to_row, track_to_col,
+        top_n=top_n, chunk_size=chunk_size, alpha=alpha,
+        pid_subset=test_pids,
+    )
 
-    for start in tqdm(range(0, len(test_pids), chunk_size),
-                      desc="evaluating", unit="chunk"):
-        chunk_pids = test_pids[start:start + chunk_size]
-        chunk_rows = [pid_to_row[pid] for pid in chunk_pids]
+    # Accumulators: {group -> {metric -> running_sum}}
+    group_sums  = defaultdict(lambda: defaultdict(float))
+    group_count = defaultdict(int)
 
-        A_chunk = A[chunk_rows]                   # (K x n_tracks)
-        S       = A_chunk.dot(A.T)                # (K x n_playlists)
+    for pid in tqdm(test_pids, desc="scoring", unit="playlist"):
+        # Cap truth to top_n
+        truth_list = ground_truth[pid][:top_n]
+        truth_set  = set(truth_list)
 
-        # Zero self-similarity
-        for local_i, global_row in enumerate(chunk_rows):
-            S[local_i, global_row] = 0.0
+        # Predicted: ordered list of uris
+        predicted  = [uri for uri, _ in all_recs.get(pid, [])]
 
-        V = S.dot(A).toarray()                    # (K x n_tracks) dense
-        already_in = A_chunk.toarray().astype(bool)
-        V[already_in] = 0.0
-
-        for local_i, pid in enumerate(chunk_pids):
-            votes   = V[local_i]
-            top_idx = np.argsort(votes)[::-1][:top_n]
-            predicted = {col_to_track[idx] for idx in top_idx if votes[idx] > 0}
-
-            truth   = ground_truth[pid]
-            hits    = len(predicted & truth)
-            prec    = hits / top_n
-            rec     = hits / len(truth) if truth else 0.0
-
-            group = pid_to_samples.get(pid, -1)
-            group_precision[group] += prec
-            group_recall[group]    += rec
-            group_count[group]     += 1
+        group = pid_to_samples.get(pid, -1)
+        group_sums[group]["r_precision"] += _r_precision(predicted, truth_set)
+        group_sums[group]["ndcg"]        += _ndcg(predicted, truth_set)
+        group_sums[group]["clicks"]      += _clicks(predicted, truth_set)
+        group_count[group]               += 1
 
     # Aggregate
-    total_p = sum(group_precision.values())
-    total_r = sum(group_recall.values())
-    n_total = sum(group_count.values())
-
-    overall  = (total_p / n_total, total_r / n_total)
     by_group = {
-        g: (group_precision[g] / group_count[g],
-            group_recall[g]    / group_count[g],
-            group_count[g])
+        g: {
+            "r_precision": group_sums[g]["r_precision"] / group_count[g],
+            "ndcg":        group_sums[g]["ndcg"]        / group_count[g],
+            "clicks":      group_sums[g]["clicks"]      / group_count[g],
+            "n":           group_count[g],
+        }
         for g in sorted(group_count)
+    }
+
+    n_total = sum(group_count.values())
+    overall = {
+        metric: sum(group_sums[g][metric] for g in group_count) / n_total
+        for metric in ("r_precision", "ndcg", "clicks")
     }
 
     return overall, by_group
 
 
+# --------------------------------------------------------------------------- #
+#  Pretty printing                                                             #
+# --------------------------------------------------------------------------- #
+
 def print_results(overall, by_group, top_n):
-    width = 60
+    width = 72
     print(f"\n{'─' * width}")
-    print(f"  {'num_samples':>12}  {'precision@'+str(top_n):>14}  {'recall@'+str(top_n):>12}  {'n':>7}")
+    print(f"  {'num_samples':>12}  {'R-Prec':>10}  {'NDCG':>10}  {'Clicks':>10}  {'n':>7}")
     print(f"{'─' * width}")
-    for group, (prec, rec, count) in by_group.items():
-        print(f"  {group:>12}  {prec:>14.4f}  {rec:>12.4f}  {count:>7,}")
+    for group, metrics in by_group.items():
+        print(f"  {group:>12}  "
+              f"{metrics['r_precision']:>10.4f}  "
+              f"{metrics['ndcg']:>10.4f}  "
+              f"{metrics['clicks']:>10.4f}  "
+              f"{metrics['n']:>7,}")
     print(f"{'─' * width}")
-    print(f"  {'overall':>12}  {overall[0]:>14.4f}  {overall[1]:>12.4f}  {sum(c for _,_,c in by_group.values()):>7,}")
+    print(f"  {'overall':>12}  "
+          f"{overall['r_precision']:>10.4f}  "
+          f"{overall['ndcg']:>10.4f}  "
+          f"{overall['clicks']:>10.4f}  "
+          f"{sum(m['n'] for m in by_group.values()):>7,}")
     print(f"{'─' * width}\n")

@@ -1,10 +1,3 @@
-"""
-    recommend_all.py - batch recommendations for every playlist via matrix ops.
-
-    For a small dataset (quick mode, ~5k playlists) the full S = A @ A.T fits
-    in memory. For the full 1M dataset we chunk: process K rows of A at a time.
-"""
-
 import numpy as np
 from tqdm import tqdm
 

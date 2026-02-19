@@ -1,0 +1,13 @@
+venv/
+data/
+
+*.pyc
+*.swp
+*.zip
+.DS_Store
+
+*.aux
+*.fdb_latexmk
+*.fls
+*.log
+*.synctex.gz

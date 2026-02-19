@@ -10,4 +10,4 @@ data/
 *.fdb_latexmk
 *.fls
 *.log
-.synctex.gz
+*.synctex.gz

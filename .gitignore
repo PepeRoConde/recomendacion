@@ -1,0 +1,7 @@
+venv/
+dataset/
+
+*.pyc
+*.swp
+*.zip
+.DS_Store

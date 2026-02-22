@@ -1,49 +1,49 @@
 """
-    src/evaluation/evaluate.py
+    src/evaluation/evaluate.py  (iteration 0 — popularity baseline)
 
-    Metrics
-    -------
-    R-Precision
-        |predicted ∩ truth[:top_n]| / |truth[:top_n]|
-        Rewards total relevant retrieved regardless of order.
+    Metrics (as defined in the RecSys 2018 MPD challenge):
+        R-Precision        : hits in top-R / R  (R = |ground truth|)
+        NDCG               : normalised discounted cumulative gain
+        Recommended clicks : refreshes of a 10-track list before first hit
 
-    NDCG  (Normalised Discounted Cumulative Gain)
-        DCG  = Σ 1/log2(i+2)  for each relevant track at rank i (0-indexed)
-        IDCG = DCG of a perfect ranking (relevant tracks first)
-        NDCG = DCG / IDCG   (0 if no relevant tracks)
-
-    Recommended Songs Clicks
-        floor(rank_of_first_relevant / 10)   (0-indexed rank, buckets of 10)
-        51 if no relevant track found in predictions.
-        Lower is better.
-
-    All three metrics are averaged across playlists and reported per
-    num_samples group and overall.
-
-    evaluate() delegates scoring to the blended model via recommend_all()
-    so that the alpha parameter is respected.
+    Public functions
+    ----------------
+    load_eval       : loads test_input and test_eval JSON files
+    r_precision     : R-Precision for one playlist
+    ndcg            : NDCG for one playlist
+    clicks          : Clicks for one playlist
+    evaluate_all    : runs all metrics over all test playlists
+    print_results   : pretty-prints the results table
 """
 
 import json
 import os
-import math
-import numpy as np
 from collections import defaultdict
+
 from tqdm import tqdm
 
+from src.evaluation.metrics import r_precision, ndcg, clicks
 
-# --------------------------------------------------------------------------- #
-#  Data loading                                                                #
-# --------------------------------------------------------------------------- #
+
+# ------------------------------------------------------------------ #
+#  Data loading                                                        #
+# ------------------------------------------------------------------ #
 
 def load_eval(eval_dir):
     """
-    Load the eval split.
+    Loads the evaluation split.
+
+    Parameters
+    ----------
+    eval_dir : directory containing:
+               - test_input_playlists.json  (seed tracks shown to the system)
+               - test_eval_playlists.json   (withheld tracks = ground truth)
 
     Returns
     -------
-    ground_truth   : dict  {pid -> list of track_uris}   ordered, capped later
-    pid_to_samples : dict  {pid -> num_samples}
+    ground_truth   : dict  {pid -> list of withheld track_uris}
+    seed_tracks    : dict  {pid -> set  of seed track_uris}
+    pid_to_samples : dict  {pid -> num_samples}  — for group breakdown
     """
     eval_path  = os.path.join(eval_dir, "test_eval_playlists.json")
     input_path = os.path.join(eval_dir, "test_input_playlists.json")
@@ -53,168 +53,96 @@ def load_eval(eval_dir):
     with open(input_path, encoding="utf-8") as f:
         input_data = json.load(f)
 
-    # Keep as list (order doesn't matter for these metrics, but consistent)
     ground_truth = {
         p["pid"]: [t["track_uri"] for t in p["tracks"]]
         for p in eval_data["playlists"]
+    }
+    seed_tracks = {
+        p["pid"]: {t["track_uri"] for t in p["tracks"]}
+        for p in input_data["playlists"]
     }
     pid_to_samples = {
         p["pid"]: p["num_samples"]
         for p in input_data["playlists"]
     }
-    return ground_truth, pid_to_samples
+    return ground_truth, seed_tracks, pid_to_samples
 
 
-# --------------------------------------------------------------------------- #
-#  Per-playlist metric functions                                               #
-# --------------------------------------------------------------------------- #
+# ------------------------------------------------------------------ #
+#  Full evaluation                                                     #
+# ------------------------------------------------------------------ #
 
-def _r_precision(predicted_ranked, truth_set):
+def evaluate_all(ground_truth, seed_tracks, pid_to_samples,
+                 popularity_list, top_n=500):
     """
-    R-Precision: hits in predicted / |truth_set|.
-    predicted_ranked is already capped to top_n before calling.
-    truth_set        is already capped to top_n before calling.
-    """
-    if not truth_set:
-        return 0.0
-    hits = sum(1 for t in predicted_ranked if t in truth_set)
-    return hits / len(truth_set)
-
-
-def _ndcg(predicted_ranked, truth_set):
-    """
-    NDCG over the full predicted list.
-    truth_set is already capped to top_n.
-    """
-    if not truth_set:
-        return 0.0
-
-    dcg = sum(
-        1.0 / math.log2(i + 2)
-        for i, t in enumerate(predicted_ranked)
-        if t in truth_set
-    )
-
-    # Ideal: all relevant tracks placed first
-    n_ideal = min(len(truth_set), len(predicted_ranked))
-    idcg    = sum(1.0 / math.log2(i + 2) for i in range(n_ideal))
-
-    return dcg / idcg if idcg > 0 else 0.0
-
-
-def _clicks(predicted_ranked, truth_set):
-    """
-    Recommended Songs Clicks: floor(rank_of_first_relevant / 10).
-    Returns 51 if no relevant track found.
-    """
-    for rank, t in enumerate(predicted_ranked):
-        if t in truth_set:
-            return rank // 10
-    return 51
-
-
-# --------------------------------------------------------------------------- #
-#  Main evaluation loop                                                        #
-# --------------------------------------------------------------------------- #
-
-def evaluate(ground_truth, pid_to_samples, pid_to_row, A, track_to_col,
-             top_n=500, chunk_size=500, alpha=0.5):
-    """
-    Evaluate R-Precision, NDCG, and Clicks using the blended model.
+    Runs the three metrics over every test playlist using the popularity
+    baseline recommender.
 
     Parameters
     ----------
-    ground_truth   : {pid -> list of track_uris}
-    pid_to_samples : {pid -> num_samples}
-    pid_to_row     : {pid -> matrix row index}
-    A              : sparse playlist-track matrix
-    track_to_col   : {track_uri -> col index}
-    top_n          : recommendation list length (default 500, per challenge spec)
-    chunk_size     : playlists per batch
-    alpha          : CF vs reputation blend weight
+    ground_truth    : dict  {pid -> list of withheld track_uris}
+    seed_tracks     : dict  {pid -> set  of seed track_uris}
+    pid_to_samples  : dict  {pid -> num_samples}
+    popularity_list : output of popularity.build_popularity()
+    top_n           : recommendations per playlist (default 500)
 
     Returns
     -------
-    overall  : dict  {metric -> mean_value}
-    by_group : dict  {num_samples -> {metric -> mean_value, 'n' -> count}}
+    overall  : (r_prec, ndcg_score, clicks_score)
+    by_group : dict  {num_samples -> (r_prec, ndcg, clicks, count)}
     """
-    # Import here to avoid circular imports at module load time
-    from src.models.blend import recommend_all
+    from src.popularity import recommend_popular
 
-    test_pids = [pid for pid in ground_truth if pid in pid_to_row]
-    missing   = [pid for pid in ground_truth if pid not in pid_to_row]
-
-    if not test_pids:
-        raise ValueError("No test pids found in the training matrix. "
-                         "Rebuild with --input-playlists.")
-    if missing:
-        print(f"[warn] {len(missing)} test pids not in matrix — skipped")
-
-    # Get blended recommendations for all test playlists in one pass
-    print(f"[evaluate] running blended model (alpha={alpha:.2f}) …")
-    all_recs = recommend_all(
-        A, pid_to_row, track_to_col,
-        top_n=top_n, chunk_size=chunk_size, alpha=alpha,
-        pid_subset=test_pids,
-    )
-
-    # Accumulators: {group -> {metric -> running_sum}}
-    group_sums  = defaultdict(lambda: defaultdict(float))
+    group_rp    = defaultdict(float)
+    group_ndcg  = defaultdict(float)
+    group_clk   = defaultdict(float)
     group_count = defaultdict(int)
 
-    for pid in tqdm(test_pids, desc="scoring", unit="playlist"):
-        # Cap truth to top_n
-        truth_list = ground_truth[pid][:top_n]
-        truth_set  = set(truth_list)
+    for pid, relevant in tqdm(ground_truth.items(), desc="evaluating", unit="pl"):
+        seed    = seed_tracks.get(pid, set())
+        recs    = recommend_popular(seed, popularity_list, top_n=top_n)
+        rel_set = set(relevant)
 
-        # Predicted: ordered list of uris
-        predicted  = [uri for uri, _ in all_recs.get(pid, [])]
+        rp = r_precision(recs, rel_set)
+        ng = ndcg(recs, rel_set)
+        cl = clicks(recs, rel_set)
 
-        group = pid_to_samples.get(pid, -1)
-        group_sums[group]["r_precision"] += _r_precision(predicted, truth_set)
-        group_sums[group]["ndcg"]        += _ndcg(predicted, truth_set)
-        group_sums[group]["clicks"]      += _clicks(predicted, truth_set)
-        group_count[group]               += 1
-
-    # Aggregate
-    by_group = {
-        g: {
-            "r_precision": group_sums[g]["r_precision"] / group_count[g],
-            "ndcg":        group_sums[g]["ndcg"]        / group_count[g],
-            "clicks":      group_sums[g]["clicks"]      / group_count[g],
-            "n":           group_count[g],
-        }
-        for g in sorted(group_count)
-    }
+        g = pid_to_samples.get(pid, -1)
+        group_rp[g]    += rp
+        group_ndcg[g]  += ng
+        group_clk[g]   += cl
+        group_count[g] += 1
 
     n_total = sum(group_count.values())
-    overall = {
-        metric: sum(group_sums[g][metric] for g in group_count) / n_total
-        for metric in ("r_precision", "ndcg", "clicks")
+    overall = (
+        sum(group_rp.values())   / n_total,
+        sum(group_ndcg.values()) / n_total,
+        sum(group_clk.values())  / n_total,
+    )
+    by_group = {
+        g: (group_rp[g]   / group_count[g],
+            group_ndcg[g] / group_count[g],
+            group_clk[g]  / group_count[g],
+            group_count[g])
+        for g in sorted(group_count)
     }
-
     return overall, by_group
 
 
-# --------------------------------------------------------------------------- #
-#  Pretty printing                                                             #
-# --------------------------------------------------------------------------- #
+# ------------------------------------------------------------------ #
+#  Pretty printing                                                     #
+# ------------------------------------------------------------------ #
 
 def print_results(overall, by_group, top_n):
-    width = 72
-    print(f"\n{'─' * width}")
-    print(f"  {'num_samples':>12}  {'R-Prec':>10}  {'NDCG':>10}  {'Clicks':>10}  {'n':>7}")
-    print(f"{'─' * width}")
-    for group, metrics in by_group.items():
-        print(f"  {group:>12}  "
-              f"{metrics['r_precision']:>10.4f}  "
-              f"{metrics['ndcg']:>10.4f}  "
-              f"{metrics['clicks']:>10.4f}  "
-              f"{metrics['n']:>7,}")
-    print(f"{'─' * width}")
-    print(f"  {'overall':>12}  "
-          f"{overall['r_precision']:>10.4f}  "
-          f"{overall['ndcg']:>10.4f}  "
-          f"{overall['clicks']:>10.4f}  "
-          f"{sum(m['n'] for m in by_group.values()):>7,}")
-    print(f"{'─' * width}\n")
+    w = 72
+    print(f"\n{'─' * w}")
+    print(f"  {'samples':>8}  {'R-Prec@'+str(top_n):>12}  "
+          f"{'NDCG@'+str(top_n):>12}  {'Clicks':>8}  {'n':>7}")
+    print(f"{'─' * w}")
+    for g, (rp, ng, cl, cnt) in by_group.items():
+        print(f"  {g:>8}  {rp:>12.4f}  {ng:>12.4f}  {cl:>8.4f}  {cnt:>7,}")
+    print(f"{'─' * w}")
+    rp, ng, cl = overall
+    n = sum(cnt for _, _, _, cnt in by_group.values())
+    print(f"  {'overall':>8}  {rp:>12.4f}  {ng:>12.4f}  {cl:>8.4f}  {n:>7,}")
+    print(f"{'─' * w}\n")

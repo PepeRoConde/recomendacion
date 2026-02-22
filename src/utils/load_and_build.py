@@ -52,19 +52,7 @@ def load_and_build(path, quick=False, max_files=5, input_playlists_path=None):
             mpd_slice = json.load(f)
 
         for playlist in mpd_slice["playlists"]:
-            row = len(playlists)
-            pid_to_row[playlist["pid"]] = row
-
-            for track in playlist["tracks"]:
-                uri = track["track_uri"]
-                if uri not in track_to_col:
-                    track_to_col[uri] = len(track_to_col)
-                    track_info[uri] = (track["track_name"], track["artist_name"])
-                rows.append(row)
-                cols.append(track_to_col[uri])
-
-            # Keep only metadata — drop the tracks list to save memory
-            playlists.append({k: v for k, v in playlist.items() if k != "tracks"})
+            _ingest_playlist(playlist, playlists, pid_to_row, track_to_col, track_info, rows, cols)
 
 
     if input_playlists_path:

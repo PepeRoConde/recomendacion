@@ -1,21 +1,3 @@
-"""
-    src/evaluation/evaluate.py  (iteration 0 — popularity baseline)
-
-    Metrics (as defined in the RecSys 2018 MPD challenge):
-        R-Precision        : hits in top-R / R  (R = |ground truth|)
-        NDCG               : normalised discounted cumulative gain
-        Recommended clicks : refreshes of a 10-track list before first hit
-
-    Public functions
-    ----------------
-    load_eval       : loads test_input and test_eval JSON files
-    r_precision     : R-Precision for one playlist
-    ndcg            : NDCG for one playlist
-    clicks          : Clicks for one playlist
-    evaluate_all    : runs all metrics over all test playlists
-    print_results   : pretty-prints the results table
-"""
-
 import json
 import os
 from collections import defaultdict
@@ -23,11 +5,8 @@ from collections import defaultdict
 from tqdm import tqdm
 
 from src.evaluation.metrics import r_precision, ndcg, clicks
+from src.models.popularity import recommend_popular
 
-
-# ------------------------------------------------------------------ #
-#  Data loading                                                        #
-# ------------------------------------------------------------------ #
 
 def load_eval(eval_dir):
     """
@@ -45,7 +24,9 @@ def load_eval(eval_dir):
     seed_tracks    : dict  {pid -> set  of seed track_uris}
     pid_to_samples : dict  {pid -> num_samples}  — for group breakdown
     """
+    # eval tiene: las canciones de las playlists que se quieren predecir
     eval_path  = os.path.join(eval_dir, "test_eval_playlists.json")
+    # input tiene: las playlists que se quieren predecir (con alguna canción a veces)
     input_path = os.path.join(eval_dir, "test_input_playlists.json")
 
     with open(eval_path,  encoding="utf-8") as f:
@@ -68,10 +49,6 @@ def load_eval(eval_dir):
     return ground_truth, seed_tracks, pid_to_samples
 
 
-# ------------------------------------------------------------------ #
-#  Full evaluation                                                     #
-# ------------------------------------------------------------------ #
-
 def evaluate_all(ground_truth, seed_tracks, pid_to_samples,
                  popularity_list, top_n=500):
     """
@@ -91,7 +68,6 @@ def evaluate_all(ground_truth, seed_tracks, pid_to_samples,
     overall  : (r_prec, ndcg_score, clicks_score)
     by_group : dict  {num_samples -> (r_prec, ndcg, clicks, count)}
     """
-    from src.popularity import recommend_popular
 
     group_rp    = defaultdict(float)
     group_ndcg  = defaultdict(float)

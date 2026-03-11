@@ -1,47 +1,27 @@
-"""
-    main.py - MPD playlist recommendation  (iteration 0 — popularity baseline)
-
-    Usage
-    -----
-    # Build matrix from raw data:
-        python main.py --path dataset/data/train
-
-    # Quick mode (only first N slices):
-        python main.py --path dataset/data/train --quick --max-files 5
-
-    # Save/load matrix to skip re-parsing:
-        python main.py --path dataset/data/train --save-matrix matrix
-        python main.py --load-matrix matrix
-
-    # Popularity baseline + evaluate + write submission:
-        python main.py --load-matrix matrix \\
-                       --baseline \\
-                       --eval-dir dataset/data/eval \\
-                       --output submission.csv \\
-                       --top-n 500
-"""
-
 import sys
 import argparse
 import pickle
 import pathlib
 import scipy.sparse
 
-from src.utils.load_and_build import load_and_build
+from src.utils.load_and_build import load_and_build_matrix_R
 from src.popularity            import build_popularity, recommend_popular, write_submission
 from src.evaluation.evaluate   import load_eval, evaluate_all, print_results
 
-
 def parse_args():
-    p = argparse.ArgumentParser(description="MPD collaborative-filtering recommender")
+    p = argparse.ArgumentParser(description="Practica de Marcos y Pepe para la asignatura Sistemas de Recomendación")
 
     # Data
-    p.add_argument("--path",            help="Path to MPD training data directory")
-    p.add_argument("--save-matrix",     metavar="FILE",
-                                        help="Save matrix + metadata to FILE.npz / FILE_meta.pkl")
-    p.add_argument("--load-matrix",     metavar="FILE",
-                                        help="Load a previously saved matrix")
-    p.add_argument("--input-playlists", metavar="FILE",
+    p.add_argument("--mpd_path",     
+                   default="data/dataset/train",
+                   help="Ruta al dataset de entrenamiento de MPD")
+    p.add_argument("--guarda_matriz",     
+                   metavar="ARCHIVO",
+                    help="Ruta para guuardar la matrix y metadata a ARCHIVO.npz / ARCHIVO_meta.pkl. Si no se especifica no se guarda.")
+    p.add_argument("--carga-matriz",     
+                   metavar="ARCHIVO",
+                    help="Carga la matriz desde una ruta (si hay una guardada ahí)")
+    p.add_argument("--test_playlists_path", metavar="FILE",
                                         help="Path to test_input_playlists.json — adds eval pids into the matrix")
     p.add_argument("--quick",           action="store_true",
                                         help="Only load first --max-files slices")
@@ -60,45 +40,16 @@ def parse_args():
     return p.parse_args()
 
 
-# ------------------------------------------------------------------ #
-#  Matrix persistence                                                  #
-# ------------------------------------------------------------------ #
-
-def save_matrix(stem, A, playlists, pid_to_row, track_to_col, track_info):
-    stem = pathlib.Path(stem)
-    scipy.sparse.save_npz(str(stem) + ".npz", A)
-    with open(str(stem) + "_meta.pkl", "wb") as f:
-        pickle.dump({"playlists":    playlists,
-                     "pid_to_row":   pid_to_row,
-                     "track_to_col": track_to_col,
-                     "track_info":   track_info}, f)
-    print(f"[saved] {stem}.npz  +  {stem}_meta.pkl")
-
-
-def load_matrix(stem):
-    stem = pathlib.Path(stem)
-    A = scipy.sparse.load_npz(str(stem) + ".npz")
-    with open(str(stem) + "_meta.pkl", "rb") as f:
-        meta = pickle.load(f)
-    n = len(meta["playlists"])
-    print(f"[loaded] {n:,} playlists x {A.shape[1]:,} tracks")
-    return A, meta["playlists"], meta["pid_to_row"], meta["track_to_col"], meta["track_info"]
-
-
-# ------------------------------------------------------------------ #
-#  Main                                                                #
-# ------------------------------------------------------------------ #
-
 def main():
     args = parse_args()
 
     # --- Load / build ------------------------------------------------
     if args.load_matrix:
         A, playlists, pid_to_row, track_to_col, track_info = load_matrix(args.load_matrix)
-    elif args.path:
+    elif args.mpd_path:
         A, playlists, pid_to_row, track_to_col, track_info = load_and_build(
-            args.path, quick=args.quick, max_files=args.max_files,
-            input_playlists_path=args.input_playlists,
+            args.mpd_path, quick=args.quick, max_files=args.max_files,
+            test_playlists_path=args.test_playlists_path,
         )
     else:
         print("Error: provide --path or --load-matrix")
@@ -107,7 +58,7 @@ def main():
     print(f"[matrix]  shape={A.shape}  nnz={A.nnz:,}  "
           f"density={A.nnz / (A.shape[0] * A.shape[1]):.6f}")
 
-    if args.save_matrix:
+    if args.guarda_matriz:
         save_matrix(args.save_matrix, A, playlists, pid_to_row, track_to_col, track_info)
 
     # --- Mode: popularity baseline -----------------------------------

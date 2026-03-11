@@ -1,26 +1,10 @@
-"""
-    src/evaluation/metrics.py
-
-    Pure metric functions for the RecSys 2018 MPD challenge:
-        r_precision  : R-Precision
-        ndcg         : Normalised Discounted Cumulative Gain
-        clicks       : Recommended Songs Clicks
-"""
-
 import math
 
 
 def r_precision(predicted, relevant_set):
     """
-    R-Precision: fraction of ground-truth tracks found in the top-R predictions.
-
-    R is defined as |relevant_set|.  Only the first R predictions are examined.
-
-    Example
-    -------
-    predicted    = [A, B, C, D, E]
-    relevant_set = {A, C, X}   →  R = 3
-    hits in predicted[:3] = {A, C}  →  R-Prec = 2/3
+    si hay R elementos relevantes, 
+    ¿cuantos elementos relevantes hay en los top-R predichos?
     """
     R = len(relevant_set)
     if R == 0:
@@ -31,23 +15,13 @@ def r_precision(predicted, relevant_set):
 
 def ndcg(predicted, relevant_set):
     """
-    Normalised Discounted Cumulative Gain (binary relevance).
-
-    DCG  = sum_{i=0}^{n-1}  rel_i / log2(i + 2)
-    IDCG = sum_{i=0}^{R-1}  1     / log2(i + 2)   (ideal: all R hits first)
+    Normalized Discounted Comulative Gain
     NDCG = DCG / IDCG
-
-    Positions are 0-indexed, so position 0 has weight 1/log2(2) = 1.
     """
     if not relevant_set:
         return 0.0
 
-    dcg = 0.0
-    for i, t in enumerate(predicted):
-        if t in relevant_set:
-            dcg += 1.0 / math.log2(i + 2)
-
-    # Ideal DCG: first |relevant_set| positions all relevant
+    dcg = sum(1.0 / math.log2(i + 2) for i, item in enumerate(predicted) if item in relevant_set)    
     idcg = sum(1.0 / math.log2(i + 2) for i in range(len(relevant_set)))
 
     return dcg / idcg if idcg > 0.0 else 0.0
@@ -55,16 +29,11 @@ def ndcg(predicted, relevant_set):
 
 def clicks(predicted, relevant_set):
     """
-    Minimum number of times the user must refresh the 10-track recommendation
-    list before seeing a relevant track.
-
-    - Position 1-10  (index 0-9)  → 0 clicks
-    - Position 11-20 (index 10-19)→ 1 click
-    - ...
-    - No relevant track found     → 51  (per challenge spec: 1 > max possible)
+    ¿cuantas veces tendría que resetear las top 10 predicciones para encontrar una cancion buena?
+    si la cancion buena esta en las 10 primeras, 0; si esta en las 10 siguientes, 1... como máximo 51
     """
     for i, t in enumerate(predicted):
         if t in relevant_set:
             return i // 10
 
-    return 51   # challenge spec: "a value of 51 is picked"
+    return 51

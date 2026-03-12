@@ -1,8 +1,8 @@
 import numpy as np
 from .base import BaseRecommender
 
-class PopularityRecommender(BaseRecommender):
 
+class PopularityRecommender(BaseRecommender):
     def fit(self, A, track_to_col, **kwargs):
         col_to_track = {v: k for k, v in track_to_col.items()}
         counts = np.asarray(A.sum(axis=0)).flatten()

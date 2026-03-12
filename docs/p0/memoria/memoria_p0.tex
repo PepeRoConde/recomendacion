@@ -94,26 +94,26 @@ class Attention(nn.Module):
             attn = self.attend(dots)
             attn = self.dropout(attn)
             out = torch.matmul(attn, w)
-        
+
         elif self.order == 'second':
             # Second-order Neumann approximation
             # out = out_1st - out_2nd
-            
+
             # First order term: (U^T Z) * softmax((U^T Z)^T (U^T Z))
             attn_1st = self.attend(dots)
             attn_1st = self.dropout(attn_1st)
             out_1st = torch.matmul(attn_1st, w)
-            
+
             # Second order term: (U^T Z) * softmax(((U^T Z)^T (U^T Z))^2)
             # Compute ((U^T Z)^T (U^T Z))^2
             dots_2nd = torch.matmul(dots, dots)
             attn_2nd = self.attend(dots_2nd)
             attn_2nd = self.dropout(attn_2nd)
             out_2nd = torch.matmul(attn_2nd, w)
-            
+
             # Combine: subtract second order correction
             out = out_1st - out_2nd
-        
+
         else:
             raise ValueError(f"order must be 'first' or 'second', got {self.order}")
 
@@ -123,4 +123,3 @@ class Attention(nn.Module):
 \end{lstlisting}
 
 \end{document}
-

@@ -1,7 +1,7 @@
 from abc import ABC, abstractmethod
 
-class BaseRecommender(ABC):
 
+class BaseRecommender(ABC):
     @abstractmethod
     def fit(self, A, track_to_col, **kwargs): ...
 

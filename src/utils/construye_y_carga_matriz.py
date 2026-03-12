@@ -52,24 +52,35 @@ def construye_y_carga_matriz(path, max_jsons=5):
 
                 # si es la primera vez que procesamos esa cancion
                 if uri not in track_to_col:
-                    track_to_col[uri] = len(track_to_col) # le asignamos columna
-                    track_info[uri] = (track["track_name"], track["artist_name"]) # y metadata
+                    track_to_col[uri] = len(track_to_col)  # le asignamos columna
+                    track_info[uri] = (
+                        track["track_name"],
+                        track["artist_name"],
+                    )  # y metadata
 
-                rows.append(i) # por cada cancion de la playlist i, metemos i en _rows_
-                cols.append(track_to_col[uri]) # metemos indice de columna de esa cancion en _cols_
+                rows.append(i)  # por cada cancion de la playlist i, metemos i en _rows_
+                cols.append(
+                    track_to_col[uri]
+                )  # metemos indice de columna de esa cancion en _cols_
     print(f"Parseáronse {len(filenames)} en {time.time() - inicio:.3}s")
 
     n_playlists = len(pid_to_row.keys())
     n_tracks = len(track_to_col.keys())
 
-    data = np.ones(len(rows), dtype=np.float32) # tantos unos como ocurrencias de canciones en playlists
+    data = np.ones(
+        len(rows), dtype=np.float32
+    )  # tantos unos como ocurrencias de canciones en playlists
     rows = np.array(rows, dtype=np.int32)
     cols = np.array(cols, dtype=np.int32)
-    
+
     inicio = time.time()
     R = csr_matrix((data, (rows, cols)), shape=(n_playlists, n_tracks))
-    print(f'A matriz R tardou {time.time() - inicio:.3f}s  en construirse con csr_matrix()')
+    print(
+        f"A matriz R tardou {time.time() - inicio:.3f}s  en construirse con csr_matrix()"
+    )
 
-    print(f"Cargouse a matriz R con shape={R.shape},  nnz={R.nnz:,} densidade={R.nnz / (R.shape[0] * R.shape[1]):.6f}")
+    print(
+        f"Cargouse a matriz R con shape={R.shape},  nnz={R.nnz:,} densidade={R.nnz / (R.shape[0] * R.shape[1]):.6f}"
+    )
 
     return R, pid_to_row, track_to_col, track_info

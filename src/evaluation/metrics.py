@@ -3,7 +3,7 @@ import math
 
 def r_precision(predicted, relevant_set):
     """
-    si hay R elementos relevantes, 
+    si hay R elementos relevantes,
     ¿cuantos elementos relevantes hay en los top-R predichos?
     """
     R = len(relevant_set)
@@ -21,7 +21,11 @@ def ndcg(predicted, relevant_set):
     if not relevant_set:
         return 0.0
 
-    dcg = sum(1.0 / math.log2(i + 2) for i, item in enumerate(predicted) if item in relevant_set)    
+    dcg = sum(
+        1.0 / math.log2(i + 2)
+        for i, item in enumerate(predicted)
+        if item in relevant_set
+    )
     idcg = sum(1.0 / math.log2(i + 2) for i in range(len(relevant_set)))
 
     return dcg / idcg if idcg > 0.0 else 0.0

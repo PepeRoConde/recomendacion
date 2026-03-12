@@ -1,89 +1,66 @@
 import json
 import os
+import time
 from collections import defaultdict
 
-from tqdm import tqdm
-
 from src.evaluation.metrics import r_precision, ndcg, clicks
-from src.models.popularity import recommend_popular
-
 
 def load_eval(eval_dir):
-    """
-    Loads the evaluation split.
-
-    Parameters
-    ----------
-    eval_dir : directory containing:
-               - test_input_playlists.json  (seed tracks shown to the system)
-               - test_eval_playlists.json   (withheld tracks = ground truth)
-
-    Returns
-    -------
-    ground_truth   : dict  {pid -> list of withheld track_uris}
-    seed_tracks    : dict  {pid -> set  of seed track_uris}
-    pid_to_samples : dict  {pid -> num_samples}  — for group breakdown
-    """
-    # eval tiene: las canciones de las playlists que se quieren predecir
-    eval_path  = os.path.join(eval_dir, "test_eval_playlists.json")
-    # input tiene: las playlists que se quieren predecir (con alguna canción a veces)
+    # eval tiene: las canciones de las playlists que se quieren predecir, es 
+    # decir, lo que vale para comparar las predicciones del modelo
+    eval_path = os.path.join(eval_dir, "test_eval_playlists.json")
+    # input tiene: las playlists que se quieren predecir (con alguna canción a veces),
+    # vale para saber que se tiene que predecir
     input_path = os.path.join(eval_dir, "test_input_playlists.json")
 
-    with open(eval_path,  encoding="utf-8") as f:
-        eval_data  = json.load(f)
-    with open(input_path, encoding="utf-8") as f:
-        input_data = json.load(f)
+    with open(eval_path, encoding="utf-8") as f: eval_data = json.load(f)
+    with open(input_path, encoding="utf-8") as f: input_data = json.load(f)
 
-    ground_truth = {
-        p["pid"]: [t["track_uri"] for t in p["tracks"]]
-        for p in eval_data["playlists"]
-    }
-    seed_tracks = {
-        p["pid"]: {t["track_uri"] for t in p["tracks"]}
-        for p in input_data["playlists"]
-    }
-    pid_to_samples = {
-        p["pid"]: p["num_samples"]
-        for p in input_data["playlists"]
-    }
-    return ground_truth, seed_tracks, pid_to_samples
+    ground_truth = {p["pid"]: [t["track_uri"] for t in p["tracks"]] for p in eval_data["playlists"]}
+    pid_to_uri = {p["pid"]: {t["track_uri"] for t in p["tracks"]} for p in input_data["playlists"]}
+    # num_samples es: cuantas canciones tenia esa playlist en entrenamiento.
+    # puede ser 0, en ese caso hay un _cold_start_
+    pid_to_num_samples = {p["pid"]: p["num_samples"] for p in input_data["playlists"]}
+
+    return ground_truth, pid_to_uri, pid_to_num_samples
 
 
-def evaluate_all(ground_truth, seed_tracks, pid_to_samples,
-                 popularity_list, top_n=500):
+def evaluate(model, ground_truth, pid_to_uri, pid_to_num_samples, top_n=500):
     """
-    Runs the three metrics over every test playlist using the popularity
-    baseline recommender.
-
     Parameters
     ----------
-    ground_truth    : dict  {pid -> list of withheld track_uris}
-    seed_tracks     : dict  {pid -> set  of seed track_uris}
-    pid_to_samples  : dict  {pid -> num_samples}
-    popularity_list : output of popularity.build_popularity()
-    top_n           : recommendations per playlist (default 500)
+    model          : BaseRecommender  — must have .recommend_batch(seeds, top_n)
+    ground_truth   : dict  {pid -> list of withheld track_uris}
+    pid_to_uri    : dict  {pid -> set  of seed track_uris}
+    pid_to_num_samples : dict  {pid -> num_samples}
+    top_n          : recommendations per playlist (default 500)
 
     Returns
     -------
     overall  : (r_prec, ndcg_score, clicks_score)
     by_group : dict  {num_samples -> (r_prec, ndcg, clicks, count)}
     """
-
     group_rp    = defaultdict(float)
     group_ndcg  = defaultdict(float)
     group_clk   = defaultdict(float)
     group_count = defaultdict(int)
 
-    for pid, relevant in tqdm(ground_truth.items(), desc="evaluating", unit="pl"):
-        seed    = seed_tracks.get(pid, set())
-        recs    = recommend_popular(seed, popularity_list, top_n=top_n)
-        rel_set = set(relevant)
+    pids  = list(ground_truth.keys())
+    seeds = [pid_to_uri.get(pid, set()) for pid in pids]
+
+    print(f"Evaluando o modelo {model.name} com {len(pids):,} playlists ...")
+    inicio = time.time()
+    all_recs = model.recommend_batch(seeds, top_n=top_n)  # list[list[str]]
+    print(f"... tardou {time.time() - inicio:.3f}s")
+
+    for pid, recs in zip(pids, all_recs):
+        rel_set = set(ground_truth[pid])
 
         rp = r_precision(recs, rel_set)
         ng = ndcg(recs, rel_set)
         cl = clicks(recs, rel_set)
 
-        g = pid_to_samples.get(pid, -1)
+        g = pid_to_num_samples.get(pid, -1)
         group_rp[g]    += rp
         group_ndcg[g]  += ng
         group_clk[g]   += cl
@@ -105,15 +82,13 @@ def evaluate_all(ground_truth, seed_tracks, pid_to_samples,
     return overall, by_group
 
 
-# ------------------------------------------------------------------ #
-#  Pretty printing                                                     #
-# ------------------------------------------------------------------ #
-
 def print_results(overall, by_group, top_n):
     w = 72
     print(f"\n{'─' * w}")
-    print(f"  {'samples':>8}  {'R-Prec@'+str(top_n):>12}  "
-          f"{'NDCG@'+str(top_n):>12}  {'Clicks':>8}  {'n':>7}")
+    print(
+        f"  {'samples':>8}  {'R-Prec@'+str(top_n):>12}  "
+        f"{'NDCG@'+str(top_n):>12}  {'Clicks':>8}  {'n':>7}"
+    )
     print(f"{'─' * w}")
     for g, (rp, ng, cl, cnt) in by_group.items():
         print(f"  {g:>8}  {rp:>12.4f}  {ng:>12.4f}  {cl:>8.4f}  {cnt:>7,}")

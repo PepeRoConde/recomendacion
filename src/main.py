@@ -1,41 +1,59 @@
 import sys
 import argparse
-import pickle
-import pathlib
-import scipy.sparse
+import time
 
-from src.utils.load_and_build import load_and_build_matrix_R
-from src.popularity            import build_popularity, recommend_popular, write_submission
-from src.evaluation.evaluate   import load_eval, evaluate_all, print_results
+from src.utils import carga_matriz, construye_y_carga_matriz, guarda_matriz
+from src.models.popularity import PopularityRecommender
+from src.evaluation.evaluate import load_eval, evaluate, print_results
+
+
+MODELOS = {
+    "popularity": PopularityRecommender,
+}
 
 def parse_args():
-    p = argparse.ArgumentParser(description="Practica de Marcos y Pepe para la asignatura Sistemas de Recomendación")
+    p =  argparse.ArgumentParser(description="Practica de Marcos y Pepe para la asignatura Sistemas de Recomendación")
 
-    # Data
-    p.add_argument("--mpd_path",     
-                   default="data/dataset/train",
-                   help="Ruta al dataset de entrenamiento de MPD")
-    p.add_argument("--guarda_matriz",     
-                   metavar="ARCHIVO",
-                    help="Ruta para guuardar la matrix y metadata a ARCHIVO.npz / ARCHIVO_meta.pkl. Si no se especifica no se guarda.")
-    p.add_argument("--carga-matriz",     
-                   metavar="ARCHIVO",
-                    help="Carga la matriz desde una ruta (si hay una guardada ahí)")
-    p.add_argument("--test_playlists_path", metavar="FILE",
-                                        help="Path to test_input_playlists.json — adds eval pids into the matrix")
-    p.add_argument("--quick",           action="store_true",
-                                        help="Only load first --max-files slices")
-    p.add_argument("--max-files",       type=int, default=5)
+    group = p.add_mutually_exclusive_group()
 
-    # Baseline / evaluation
-    p.add_argument("--baseline",        action="store_true",
-                                        help="Run popularity baseline recommender")
-    p.add_argument("--eval-dir",        metavar="DIR",
-                                        help="Directory with test_input/test_eval JSON files")
-    p.add_argument("--output",          metavar="FILE",
-                                        help="Write challenge submission CSV to FILE")
-    p.add_argument("--top-n",           type=int, default=500,
-                                        help="Tracks to recommend per playlist (default: 500)")
+    # Carga de datos 
+    # ruta_mpd esta por defecto a None para que, por defecto, no se construya la matriz desde los JSONs
+    # y en vez se carga la matriz desde '--carga_matriz'
+    group.add_argument(
+        "--construye_matriz", metavar="RUTA_MPD_TRAIN", default=None, 
+        help="Ruta al dataset de entrenamiento de MPD. Si se especifica se construira la matriz R y otra de metadatos y se guardarán con el nombre especificado en --guarda_matriz"
+    )
+
+    group.add_argument(
+        "--carga_matriz", metavar="ARCHIVO", default="data/matriz",
+        help="Ruta para cargar la matriz y metadata desde ARCHIVO.npz / ARCHIVO_meta.pkl",
+    )
+
+    p.add_argument(
+        "--guarda_matriz", metavar="ARCHIVO", default="data/matriz",
+        help="Ruta para guardar la matriz y metadata a ARCHIVO.npz / ARCHIVO_meta.pkl que se construyo con los JSONs de --ruta_mpd",
+    )
+
+    p.add_argument(
+        "--max_jsons", type=int, default=-1,
+        help="Numero de archivos JSON que se usaran para construir R, si no se especifica se usaran todos")
+
+    # Evaluacion
+    p.add_argument(
+        "--modelo", choices=MODELOS.keys(), default="popularity")
+
+    p.add_argument(
+        "--eval-dir", metavar="DIR",
+        help="Directorio con los JSONs test_input/test_eval",
+    )
+    p.add_argument(
+        "--salida", metavar="ARCHIVO", default='salida',
+        help="Escribe la salida del modelo a ARCHIVO.csv, por defecto 'salida.csv' "
+    )
+    p.add_argument(
+        "--top-n", type=int, default=500,
+        help="Numero de canciones para recomendar por playlist",
+    )
 
     return p.parse_args()
 
@@ -43,55 +61,35 @@ def parse_args():
 def main():
     args = parse_args()
 
-    # --- Load / build ------------------------------------------------
-    if args.load_matrix:
-        A, playlists, pid_to_row, track_to_col, track_info = load_matrix(args.load_matrix)
-    elif args.mpd_path:
-        A, playlists, pid_to_row, track_to_col, track_info = load_and_build(
-            args.mpd_path, quick=args.quick, max_files=args.max_files,
-            test_playlists_path=args.test_playlists_path,
-        )
+    
+    if args.carga_matriz:
+        R, pid_to_row, track_to_col, track_info = carga_matriz(args.carga_matriz)
+
+    elif args.construye_matriz:
+        R, pid_to_row, track_to_col, track_info = construye_y_carga_matriz(args.construye_matriz, max_jsons=args.max_jsons)
+
+        guarda_matriz(args.construye_matriz, R, pid_to_row, track_to_col, track_info)
     else:
-        print("Error: provide --path or --load-matrix")
+        print("Error cargando la matriz R")
         sys.exit(1)
 
-    print(f"[matrix]  shape={A.shape}  nnz={A.nnz:,}  "
-          f"density={A.nnz / (A.shape[0] * A.shape[1]):.6f}")
 
-    if args.guarda_matriz:
-        save_matrix(args.save_matrix, A, playlists, pid_to_row, track_to_col, track_info)
+    modelo = MODELOS[args.modelo]()
 
-    # --- Mode: popularity baseline -----------------------------------
-    if args.baseline:
-        print("\n[baseline] computing track popularity …")
-        popularity_list = build_popularity(A, track_to_col)
-        print(f"[baseline] top-3 tracks: "
-              f"{', '.join(uri for uri, _ in popularity_list[:3])}")
+    inicio = time.time()
+    modelo.fit(R, track_to_col)
+    print(f"Tardouse {time.time() - inicio:.3f}s en axustalo modelo {args.modelo}")
 
-        if args.eval_dir:
-            print(f"[baseline] loading eval data from {args.eval_dir} …")
-            ground_truth, seed_tracks, pid_to_samples = load_eval(args.eval_dir)
-            print(f"[baseline] {len(ground_truth):,} test playlists found")
 
-            if args.output:
-                print(f"[baseline] generating {args.top_n} recommendations per playlist …")
-                predictions = {
-                    pid: recommend_popular(seed_tracks.get(pid, set()),
-                                          popularity_list, top_n=args.top_n)
-                    for pid in ground_truth
-                }
-                write_submission(predictions, args.output)
+    if args.eval_dir:
+        ground_truth, pid_to_uris, pid_to_num_samples = load_eval(args.eval_dir)
+        print(f"Atopáronse #{len(ground_truth):,} playlists de test no directorio {args.eval_dir}")
+ 
+        overall, by_group = evaluate(modelo, ground_truth, pid_to_uris, pid_to_num_samples, top_n=args.top_n) 
 
-            overall, by_group = evaluate_all(
-                ground_truth, seed_tracks, pid_to_samples,
-                popularity_list, top_n=args.top_n
-            )
-            print_results(overall, by_group, top_n=args.top_n)
+        #write_submission(predictions, args.output)
 
-        elif args.output:
-            print("Error: --output requires --eval-dir to obtain the playlist seeds")
-            sys.exit(1)
-
+        print_results(overall, by_group, top_n=args.top_n)
 
 if __name__ == "__main__":
     main()

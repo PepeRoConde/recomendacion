@@ -17,12 +17,12 @@ def load_eval(eval_dir):
     with open(input_path, encoding="utf-8") as f: input_data = json.load(f)
 
     ground_truth = {p["pid"]: [t["track_uri"] for t in p["tracks"]] for p in eval_data["playlists"]}
-    pid_to_uri = {p["pid"]: {t["track_uri"] for t in p["tracks"]} for p in input_data["playlists"]}
+    pid_to_uris = {p["pid"]: {t["track_uri"] for t in p["tracks"]} for p in input_data["playlists"]}
     # num_samples es: cuantas canciones tenia esa playlist en entrenamiento.
     # puede ser 0, en ese caso hay un _cold_start_
     pid_to_num_samples = {p["pid"]: p["num_samples"] for p in input_data["playlists"]}
 
-    return ground_truth, pid_to_uri, pid_to_num_samples
+    return ground_truth, pid_to_uris, pid_to_num_samples
 
 
 def evaluate(model, ground_truth, pid_to_uri, pid_to_num_samples, top_n=500):

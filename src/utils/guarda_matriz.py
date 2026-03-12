@@ -14,4 +14,4 @@ def guarda_matriz(stem, R,  pid_to_row, track_to_col, track_info):
             },
             f,
         )
-    print(f"[saved] {stem}.npz  +  {stem}_meta.pkl")
+    print(f"Guardouse a disco a matriz R en {stem}.npz e os metadatos en {stem}_meta.pkl")

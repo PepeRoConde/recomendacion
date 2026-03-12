@@ -35,13 +35,18 @@ def construye_y_carga_matriz(path, max_jsons=5):
     cols = []  # COO col indices
     track_info = {}  # uri -> (track_name, artist_name)
 
-    for filename in tqdm(filenames, desc="loading slices", unit="slice"):
+    row_idx = 0
+
+    inicio = time.time()
+
+    for filename in tqdm(filenames, desc="cargando JSONs", unit="json"):
         fullpath = os.path.join(path, filename)
         with open(fullpath, encoding="utf-8") as f:
             mpd_slice = json.load(f)
 
         for i, playlist in enumerate(mpd_slice["playlists"]):
-            pid_to_row[playlist["pid"]] = i
+            pid_to_row[playlist["pid"]] = row_idx
+            row_idx += 1
             for track in playlist["tracks"]:
                 uri = track["track_uri"]
 
@@ -52,6 +57,7 @@ def construye_y_carga_matriz(path, max_jsons=5):
 
                 rows.append(i) # por cada cancion de la playlist i, metemos i en _rows_
                 cols.append(track_to_col[uri]) # metemos indice de columna de esa cancion en _cols_
+    print(f"Parseáronse {len(filenames)} en {time.time() - inicio:.3}s")
 
     n_playlists = len(pid_to_row.keys())
     n_tracks = len(track_to_col.keys())
@@ -62,8 +68,8 @@ def construye_y_carga_matriz(path, max_jsons=5):
     
     inicio = time.time()
     R = csr_matrix((data, (rows, cols)), shape=(n_playlists, n_tracks))
-    print(f'La matriz R tardo {time.time() - inicio}"  en construirse con csr_matrix()')
+    print(f'A matriz R tardou {time.time() - inicio:.3f}s  en construirse con csr_matrix()')
 
-    print(f"Se cargo la matriz R con  shape={R.shape},  nnz={R.nnz:,} densidad={R.nnz / (R.shape[0] * R.shape[1]):.6f}")
+    print(f"Cargouse a matriz R con shape={R.shape},  nnz={R.nnz:,} densidade={R.nnz / (R.shape[0] * R.shape[1]):.6f}")
 
     return R, pid_to_row, track_to_col, track_info

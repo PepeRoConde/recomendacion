@@ -25,7 +25,7 @@ def parse_args():
     )
 
     group.add_argument(
-        "--carga_matriz", metavar="ARCHIVO", default="data/matriz",
+        "--carga_matriz", metavar="ARCHIVO", default=None,
         help="Ruta para cargar la matriz y metadata desde ARCHIVO.npz / ARCHIVO_meta.pkl",
     )
 
@@ -68,9 +68,9 @@ def main():
     elif args.construye_matriz:
         R, pid_to_row, track_to_col, track_info = construye_y_carga_matriz(args.construye_matriz, max_jsons=args.max_jsons)
 
-        guarda_matriz(args.construye_matriz, R, pid_to_row, track_to_col, track_info)
+        guarda_matriz(args.guarda_matriz, R, pid_to_row, track_to_col, track_info)
     else:
-        print("Error cargando la matriz R")
+        print("Error cargando a matriz R. Especificaches ben os argumentos? Corre python -m src.main -h")
         sys.exit(1)
 
 
@@ -78,7 +78,7 @@ def main():
 
     inicio = time.time()
     modelo.fit(R, track_to_col)
-    print(f"Tardouse {time.time() - inicio:.3f}s en axustalo modelo {args.modelo}")
+    print(f"Axustouse o modelo {args.modelo} en  {time.time() - inicio:.3f}s")
 
 
     if args.eval_dir:

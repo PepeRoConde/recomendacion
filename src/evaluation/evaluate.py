@@ -55,7 +55,7 @@ def evaluate(model, ground_truth, pid_to_uri, pid_to_num_samples, top_n=500):
     pids = list(ground_truth.keys())
     seeds = [pid_to_uri.get(pid, set()) for pid in pids]
 
-    print(f"Evaluando o modelo {model.name} com {len(pids):,} playlists ...")
+    print(f"Evaluando o modelo {model.name} con {len(pids):,} playlists de test...")
     inicio = time.time()
     all_recs = model.recommend_batch(seeds, top_n=top_n)  # list[list[str]]
     print(f"... tardou {time.time() - inicio:.3f}s")

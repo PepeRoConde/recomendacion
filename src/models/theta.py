@@ -17,7 +17,7 @@ This single function covers both models:
 """
 
 import numpy as np
-from scipy.sparse import csr_matrix
+from scipy.sparse import csc_matrix, csr_matrix
 
 
 def theta_cols(M: csr_matrix, k: int, diag_norms: np.ndarray) -> csr_matrix:
@@ -66,7 +66,8 @@ def theta_cols(M: csr_matrix, k: int, diag_norms: np.ndarray) -> csr_matrix:
 
         new_data[start:end] = col_data
 
-    result = csr_matrix(
+    # indptr has length n_cols+1 — must build a csc_matrix, not csr_matrix
+    result = csc_matrix(
         (new_data, indices, indptr),
         shape=M_csc.shape,
     )

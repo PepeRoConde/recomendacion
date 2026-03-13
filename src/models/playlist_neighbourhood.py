@@ -20,11 +20,9 @@ Cold start (empty seed row in B): scores default to 0 for all tracks.
 """
 
 import numpy as np
-import scipy.sparse
 from scipy.sparse import csr_matrix
 
 from .base import BaseRecommender
-from .theta import theta_cols
 
 
 class PlaylistNeighbourhoodRecommender(BaseRecommender):
@@ -58,67 +56,64 @@ class PlaylistNeighbourhoodRecommender(BaseRecommender):
         print(f"[PlaylistNeighbourhood] fit — R={self.R.shape}  k={k}")
 
     # ------------------------------------------------------------------
-    def _build_B(self, seeds: list) -> csr_matrix:
-        """Build query matrix B  (Q × T) from a list of seed-URI collections."""
-        Q = len(seeds)
-        T = self.R.shape[1]
-        rows, cols = [], []
-        for q, seed_uris in enumerate(seeds):
-            for uri in seed_uris:
-                col = self.track_to_col.get(uri)
-                if col is not None:
-                    rows.append(q)
-                    cols.append(col)
-        if not rows:
-            return csr_matrix((Q, T), dtype=np.float32)
-        data = np.ones(len(rows), dtype=np.float32)
-        return csr_matrix(
-            (data, (np.array(rows, np.int32), np.array(cols, np.int32))),
-            shape=(Q, T),
-        )
-
     def recommend_batch(self, seeds: list, top_n: int = 500) -> list[list[str]]:
-        Q = len(seeds)
-        B = self._build_B(seeds)  # (Q × T)
+        """Process one query at a time — never materialises the full Q×T score matrix."""
+        return [self._recommend_one(s, top_n) for s in seeds]
 
-        # 1.  C = R Bᵀ   (P × Q)
-        C = (self.R @ B.T).astype(np.float32)  # may be sparse or dense
+    def _recommend_one(self, seed_uris, top_n: int) -> list[str]:
+        seed_set = set(seed_uris)
+        T = self.R.shape[1]
 
-        if not scipy.sparse.issparse(C):
-            C = csr_matrix(C)
+        # ── build seed vector b_q  (T,) ───────────────────────────────
+        seed_cols = [self.track_to_col[u] for u in seed_uris if u in self.track_to_col]
+        if not seed_cols:
+            return []  # cold start — no signal available
 
-        # 2.  θ_k(C)  column-wise  (each column = one query playlist)
-        #     diag_norms are row-entity (playlist) norms
-        C_thresh = theta_cols(C, self.k, self.diag_norms)  # (P × Q)
+        b_q = np.zeros(T, dtype=np.float32)
+        b_q[seed_cols] = 1.0
+        seed_size = len(seed_cols)
 
-        # 3.  hat_B = C_thresh.T @ R   (Q × T)
-        hat_B = C_thresh.T @ self.R  # (Q × T)
+        # ── 1.  c_q = R b_q   (P,) ────────────────────────────────────
+        c_q = self.R.dot(b_q)  # (P,)  dense float32 vector
 
-        # 4.  Rank per query, exclude seeds
-        results = []
-        for q in range(Q):
-            if scipy.sparse.issparse(hat_B):
-                scores = np.asarray(hat_B[q].todense()).flatten()
-            else:
-                scores = np.asarray(hat_B[q]).flatten()
+        # ── 2a. containment zeroing ────────────────────────────────────
+        # playlist i is strictly contained in seed when:
+        #   c_q[i] == diag_norms[i]  (all of i's tracks are in the seed)
+        #   AND diag_norms[i] != seed_size  (not an identical playlist)
+        contained = (c_q == self.diag_norms) & (self.diag_norms != seed_size)
+        c_q[contained] = 0.0
 
-            # zero seed tracks
-            for uri in seeds[q]:
-                col = self.track_to_col.get(uri)
-                if col is not None:
-                    scores[col] = 0.0
+        # ── 2b. top-k threshold ────────────────────────────────────────
+        nonzero_mask = c_q > 0
+        n_nonzero = nonzero_mask.sum()
+        if n_nonzero == 0:
+            return []
+        if n_nonzero > self.k:
+            kth = np.partition(c_q, -self.k)[-self.k]
+            c_q[c_q < kth] = 0.0
 
-            n_pos = int((scores > 0).sum())
-            if n_pos == 0:
-                results.append([])
-                continue
+        # ── 3.  scores = c_q · R  but only over nonzero rows ──────────
+        # Slice only the (at most k) neighbour rows — avoids a full P×T product
+        neighbour_rows = np.flatnonzero(c_q)  # at most k indices
+        weights = c_q[neighbour_rows]  # shape (k',)
+        R_nbrs = self.R[neighbour_rows]  # (k' × T) sparse slice
 
-            n = min(top_n, n_pos)
-            top_cols = np.argpartition(scores, -n)[-n:]
-            top_cols = top_cols[np.argsort(scores[top_cols])[::-1]]
-            results.append([self.col_to_track[c] for c in top_cols])
+        scores = np.asarray(weights @ R_nbrs).flatten()  # (T,)  dense
 
-        return results
+        # ── 4.  exclude seeds, rank ────────────────────────────────────
+        for uri in seed_set:
+            col = self.track_to_col.get(uri)
+            if col is not None:
+                scores[col] = 0.0
+
+        n_pos = int((scores > 0).sum())
+        if n_pos == 0:
+            return []
+
+        n = min(top_n, n_pos)
+        top_cols = np.argpartition(scores, -n)[-n:]
+        top_cols = top_cols[np.argsort(scores[top_cols])[::-1]]
+        return [self.col_to_track[c] for c in top_cols]
 
     @property
     def name(self) -> str:

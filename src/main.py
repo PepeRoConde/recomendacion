@@ -6,7 +6,8 @@ from src.utils.carga_o_construye_matriz import carga_o_construye_matriz
 from src.models.popularity import PopularityRecommender
 from src.models.playlist_neighbourhood import PlaylistNeighbourhoodRecommender
 from src.models.track_neighbourhood import TrackNeighbourhoodRecommender
-from src.evaluation.evaluate import load_eval, evaluate, print_results
+from src.evaluation.evaluate import load_eval, evaluate
+from src.evaluation.logging import print_results, write_results
 
 
 MODELOS = {
@@ -96,7 +97,11 @@ def main():
             pid_to_num_samples,
             top_n=args.top_n,
         )
+
         print_results(overall, by_group, top_n=args.top_n)
+        write_results(
+            overall, by_group, args.top_n, modelo.name, args.max_jsons, args.k
+        )
 
 
 if __name__ == "__main__":

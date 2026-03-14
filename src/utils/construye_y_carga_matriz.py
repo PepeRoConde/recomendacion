@@ -5,20 +5,22 @@ import numpy as np
 from scipy.sparse import csr_matrix
 from tqdm import tqdm
 
+from src.models.theta import zero_contained
+
 
 def construye_y_carga_matriz(path, max_jsons=5):
     """
-    Loads the MPD dataset and builds the sparse matrix in a single pass.
+    Loads the MPD dataset, builds the sparse matrix in a single pass,
+    and filters out contained rows.
 
     Returns
     -------
-    R            : csr_matrix  (n_playlists x n_tracks), binary float32
-    pid_to_row   : dict  {pid -> row index}
+    R            : csr_matrix  (n_playlists x n_tracks), binary float32, containment-filtered
+    pid_to_row   : dict  {pid -> row index}   (indices into the *filtered* R)
     track_to_col : dict  {track_uri -> col index}
     track_info   : dict  {track_uri -> (name, artist)}
     """
 
-    # lista de los nombres de los JSONs
     filenames = sorted(
         f
         for f in os.listdir(path)
@@ -28,14 +30,15 @@ def construye_y_carga_matriz(path, max_jsons=5):
     if max_jsons != -1:
         filenames = filenames[:max_jsons]
 
-    pid_to_row = {}
+    pid_to_row_raw = {}  # pid -> row index before filtering
     track_to_col = {}
 
-    rows = []  # COO row indices
-    cols = []  # COO col indices
-    track_info = {}  # uri -> (track_name, artist_name)
+    rows = []
+    cols = []
+    pids_list = []  # pids in row order, for rebuilding pid_to_row after filter
+    track_info = {}
 
-    row_idx = 0
+    row_idx = 0  # global, never resets between files
 
     inicio = time.time()
 
@@ -44,43 +47,47 @@ def construye_y_carga_matriz(path, max_jsons=5):
         with open(fullpath, encoding="utf-8") as f:
             mpd_slice = json.load(f)
 
-        for i, playlist in enumerate(mpd_slice["playlists"]):
-            pid_to_row[playlist["pid"]] = row_idx
-            row_idx += 1
+        for playlist in mpd_slice["playlists"]:
+            pid = playlist["pid"]
+            pid_to_row_raw[pid] = row_idx
+            pids_list.append(pid)
+
             for track in playlist["tracks"]:
                 uri = track["track_uri"]
-
-                # si es la primera vez que procesamos esa cancion
                 if uri not in track_to_col:
-                    track_to_col[uri] = len(track_to_col)  # le asignamos columna
-                    track_info[uri] = (
-                        track["track_name"],
-                        track["artist_name"],
-                    )  # y metadata
+                    track_to_col[uri] = len(track_to_col)
+                    track_info[uri] = (track["track_name"], track["artist_name"])
+                rows.append(row_idx)
+                cols.append(track_to_col[uri])
 
-                rows.append(i)  # por cada cancion de la playlist i, metemos i en _rows_
-                cols.append(
-                    track_to_col[uri]
-                )  # metemos indice de columna de esa cancion en _cols_
-    print(f"Parseáronse {len(filenames)} en {time.time() - inicio:.3}s")
+            row_idx += 1
 
-    n_playlists = len(pid_to_row.keys())
-    n_tracks = len(track_to_col.keys())
+    print(f"Parseáronse {len(filenames)} ficheiros en {time.time() - inicio:.3f}s")
 
-    data = np.ones(
-        len(rows), dtype=np.float32
-    )  # tantos unos como ocurrencias de canciones en playlists
+    n_playlists = row_idx
+    n_tracks = len(track_to_col)
+
+    data = np.ones(len(rows), dtype=np.float32)
     rows = np.array(rows, dtype=np.int32)
     cols = np.array(cols, dtype=np.int32)
 
-    inicio = time.time()
-    R = csr_matrix((data, (rows, cols)), shape=(n_playlists, n_tracks))
+    t0 = time.time()
+    R_raw = csr_matrix((data, (rows, cols)), shape=(n_playlists, n_tracks))
     print(
-        f"A matriz R tardou {time.time() - inicio:.3f}s  en construirse con csr_matrix()"
+        f"Matriz R construída en {time.time()-t0:.3f}s  shape={R_raw.shape}  nnz={R_raw.nnz:,}"
     )
 
-    print(
-        f"Cargouse a matriz R con shape={R.shape},  nnz={R.nnz:,} densidade={R.nnz / (R.shape[0] * R.shape[1]):.6f}"
-    )
+    # ── containment filter ─────────────────────────────────────────────
+    t0 = time.time()
+    R, kept_indices = zero_contained(R_raw)
+    print(f"Filtrado de contención en {time.time()-t0:.3f}s")
 
+    pids_list_arr = np.array(pids_list)
+    kept_pids = pids_list_arr[kept_indices]
+    pid_to_row = {pid: new_idx for new_idx, pid in enumerate(kept_pids)}
+
+    print(
+        f"Cargouse a matriz R con shape={R.shape}  nnz={R.nnz:,}  "
+        f"densidade={R.nnz / (R.shape[0] * R.shape[1]):.6f}"
+    )
     return R, pid_to_row, track_to_col, track_info

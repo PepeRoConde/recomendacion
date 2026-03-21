@@ -18,6 +18,7 @@ Cold start: a zero row in B produces a zero column in C → zero score row in Ŝ
 
 import numpy as np
 from scipy.sparse import csr_matrix
+from sklearn.preprocessing import normalize
 
 from .base import BaseRecommender
 from .theta import topk_cols
@@ -26,7 +27,7 @@ from .theta import topk_cols
 class PlaylistNeighbourhoodRecommender(BaseRecommender):
     def fit(
         self,
-        R: csr_matrix,
+        r: csr_matrix,
         track_to_col: dict,
         k: int = 20,
         cache_dir: str = "data",
@@ -43,7 +44,10 @@ class PlaylistNeighbourhoodRecommender(BaseRecommender):
         self.k = k
         self.track_to_col = track_to_col
         self.col_to_track = {v: u for u, v in track_to_col.items()}
-        self.R = R.tocsr().astype(np.float32)
+        self.R = r.tocsr().astype(np.float32)
+        self.R = normalize(self.R, axis=1, norm="l2", copy=False)
+        if not isinstance(self.R, csr_matrix):
+            self.R = self.R.tocsr()
 
         print(f"[PlaylistNeighbourhood] fit — R={self.R.shape}  k={k}")
 
@@ -84,15 +88,18 @@ class PlaylistNeighbourhoodRecommender(BaseRecommender):
             (np.ones(len(b_rows), dtype=np.float32), (b_rows, b_cols)),
             shape=(Q, T),
         )
+        B = normalize(B, axis=1, norm="l2", copy=False)
+        if not isinstance(B, csr_matrix):
+            B = B.tocsr()
 
         # ── 2.  C = R @ Bᵀ   (P × Q) ─────────────────────────────────
         C = self.R @ B.T  # (P × Q)  sparse
 
         # ── 3.  θ_k(C) column-wise   (P × Q) ──────────────────────────
-        C_k = topk_cols(C, self.k)  # (P × Q)  sparser
+        c_k = topk_cols(C, self.k)  # (P × Q)  sparser
 
         # ── 4.  Ŝ = C_kᵀ @ R   (Q × T) ───────────────────────────────
-        scores = (C_k.T @ self.R).toarray()  # (Q × T)  dense float32
+        scores = (c_k.T @ self.R).toarray()  # (Q × T)  dense float32
 
         # ── 5.  Zero seed tracks, extract top-n per query ──────────────
         results = []

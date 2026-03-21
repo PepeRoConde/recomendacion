@@ -52,6 +52,11 @@ def parse_args():
         default=20,
         help="Tamaño do vecindario para modelos neighbourhood (default: 20)",
     )
+    p.add_argument(
+        "--use-idf",
+        action="store_true",
+        help="Activa ponderación IDF (default: False)",
+    )
 
     # ── evaluation ────────────────────────────────────────────────────
     p.add_argument(
@@ -74,7 +79,7 @@ def main():
     args = parse_args()
 
     # ── load / build R ────────────────────────────────────────────────
-    R, pid_to_row, track_to_col, track_info = carga_o_construye_matriz(
+    R, _pid_to_row, track_to_col, _track_info = carga_o_construye_matriz(
         args.train_dir, args.data_dir, args.max_jsons
     )
 
@@ -82,7 +87,13 @@ def main():
     modelo = MODELOS[args.modelo]()
 
     t0 = time.time()
-    modelo.fit(R, track_to_col, k=args.k, cache_dir=args.data_dir)
+    modelo.fit(
+        R,
+        track_to_col,
+        k=args.k,
+        cache_dir=args.data_dir,
+        use_idf=args.use_idf,
+    )
     print(f"Tardouse {time.time()-t0:.3f}s en axustar o modelo '{modelo.name}'")
 
     # ── evaluate ──────────────────────────────────────────────────────

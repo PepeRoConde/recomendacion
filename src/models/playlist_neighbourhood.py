@@ -17,8 +17,9 @@ Cold start: a zero row in B produces a zero column in C → zero score row in Ŝ
 """
 
 import numpy as np
-from scipy.sparse import csr_matrix
+from scipy.sparse import csc_matrix, csr_matrix
 from sklearn.preprocessing import normalize
+from tqdm import tqdm
 
 from .base import BaseRecommender
 from .theta import topk_cols
@@ -66,57 +67,91 @@ class PlaylistNeighbourhoodRecommender(BaseRecommender):
         -------
         list of Q lists of track URIs
         """
-        T = self.R.shape[1]
-        Q = len(seeds)
-
-        # ── 1.  Build query matrix B  (Q × T) ─────────────────────────
-        seed_cols_per_q = [
-            [self.track_to_col[u] for u in s if u in self.track_to_col] for s in seeds
-        ]
-
-        # COO for B
-        b_rows, b_cols = [], []
-        for q_idx, cols in enumerate(seed_cols_per_q):
-            for c in cols:
-                b_rows.append(q_idx)
-                b_cols.append(c)
-
-        if not b_rows:
-            return [[] for _ in seeds]
-
-        B = csr_matrix(
-            (np.ones(len(b_rows), dtype=np.float32), (b_rows, b_cols)),
-            shape=(Q, T),
-        )
-        B = normalize(B, axis=1, norm="l2", copy=False)
-        if not isinstance(B, csr_matrix):
-            B = B.tocsr()
-
-        # ── 2.  C = R @ Bᵀ   (P × Q) ─────────────────────────────────
-        C = self.R @ B.T  # (P × Q)  sparse
-
-        # ── 3.  θ_k(C) column-wise   (P × Q) ──────────────────────────
-        c_k = topk_cols(C, self.k)  # (P × Q)  sparser
-
-        # ── 4.  Ŝ = C_kᵀ @ R   (Q × T) ───────────────────────────────
-        scores = (c_k.T @ self.R).toarray()  # (Q × T)  dense float32
-
-        # ── 5.  Zero seed tracks, extract top-n per query ──────────────
+        t = self.R.shape[1]
+        batch_size = 200
         results = []
-        for q_idx, cols in enumerate(seed_cols_per_q):
-            row = scores[q_idx]
-            for c in cols:
-                row[c] = 0.0
+        total_batches = (len(seeds) + batch_size - 1) // batch_size
 
-            n_pos = int((row > 0).sum())
-            if n_pos == 0:
-                results.append([])
+        for start in tqdm(
+            range(0, len(seeds), batch_size),
+            total=total_batches,
+            desc="[PlaylistNeighbourhood] inferencia",
+            unit="batch",
+        ):
+            end = min(start + batch_size, len(seeds))
+            seeds_batch = seeds[start:end]
+            q = len(seeds_batch)
+
+            # ── 1.  Build query matrix B  (q × T) ─────────────────────
+            seed_cols_per_q = [
+                [self.track_to_col[u] for u in s if u in self.track_to_col]
+                for s in seeds_batch
+            ]
+
+            bt_rows, bt_cols = [], []
+            for q_idx, cols in enumerate(seed_cols_per_q):
+                for c in cols:
+                    bt_rows.append(c)
+                    bt_cols.append(q_idx)
+
+            # Cold-start batch: all rows empty.
+            if not bt_rows:
+                results.extend([[] for _ in seeds_batch])
                 continue
 
-            n = min(top_n, n_pos)
-            top_c = np.argpartition(row, -n)[-n:]
-            top_c = top_c[np.argsort(row[top_c])[::-1]]
-            results.append([self.col_to_track[c] for c in top_c])
+            # Build B^T directly in CSC: shape (T x q)
+            b_t = csc_matrix(
+                (np.ones(len(bt_rows), dtype=np.float32), (bt_rows, bt_cols)),
+                shape=(t, q),
+            )
+
+            # Row-normalize B by normalizing columns of B^T.
+            b_t = normalize(b_t, axis=0, norm="l2", copy=False)
+            if not isinstance(b_t, csc_matrix):
+                b_t = b_t.tocsc()
+
+            # ── 2.  C = R @ Bᵀ   (P × q) ─────────────────────────────
+            C = self.R @ b_t
+
+            # ── 3.  θ_k(C) column-wise   (P × q) ──────────────────────
+            c_k = topk_cols(C, self.k)
+
+            # ── 4.  Ŝ = C_kᵀ @ R   (q × T) ───────────────────────────
+            scores = (c_k.T @ self.R).tocsr()
+
+            # ── 5.  Zero seed tracks, extract top-n per query ─────────
+            for q_idx, cols in enumerate(seed_cols_per_q):
+                row = scores.getrow(q_idx)
+                cand_cols = row.indices
+                cand_vals = row.data
+
+                if cand_cols.size == 0:
+                    results.append([])
+                    continue
+
+                # Remove tracks already present in the seed playlist.
+                if cols:
+                    seed_set = set(cols)
+                    keep_mask = np.fromiter(
+                        (c not in seed_set for c in cand_cols),
+                        dtype=bool,
+                        count=cand_cols.size,
+                    )
+                    cand_cols = cand_cols[keep_mask]
+                    cand_vals = cand_vals[keep_mask]
+
+                if cand_cols.size == 0:
+                    results.append([])
+                    continue
+
+                n = min(top_n, cand_cols.size)
+                take = np.argpartition(cand_vals, -n)[-n:]
+                order = np.argsort(cand_vals[take])[::-1]
+                top_cols = cand_cols[take][order]
+                results.append([self.col_to_track[c] for c in top_cols])
+
+            # Release large temporaries before next batch.
+            del b_t, C, c_k, scores
 
         return results
 

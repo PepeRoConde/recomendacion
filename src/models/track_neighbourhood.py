@@ -46,94 +46,37 @@ def _checksum_r(r: csr_matrix) -> str:
     return h.hexdigest()
 
 
-def _compute_topk_cosine_blockwise(
-    r_cos: csr_matrix,
-    k_max: int,
-    block_size: int = 16,
-) -> csr_matrix:
-    """
-    Build a sparse track-track cosine matrix keeping top-k per column,
-    without materializing the full R_cos.T @ R_cos matrix.
-
-    This avoids large memory spikes on very large track vocabularies.
-    """
-    t = r_cos.shape[1]
-    out_indices = []
-    out_data = []
-    out_indptr = [0]
-
-    n_blocks = (t + block_size - 1) // block_size
-    for b in range(n_blocks):
-        c0 = b * block_size
-        c1 = min((b + 1) * block_size, t)
-
-        # Similarities from all tracks to this block of query tracks.
-        sim_block = (r_cos.T @ r_cos[:, c0:c1]).tocsc()  # (T x B)
-
-        for local_col, col_idx in enumerate(range(c0, c1)):
-            start = sim_block.indptr[local_col]
-            end = sim_block.indptr[local_col + 1]
-
-            rows = sim_block.indices[start:end]
-            vals = sim_block.data[start:end]
-
-            if rows.size == 0:
-                out_indptr.append(len(out_indices))
-                continue
-
-            # Remove self-similarity; seeds are removed later anyway.
-            mask = rows != col_idx
-            rows = rows[mask]
-            vals = vals[mask]
-
-            if rows.size == 0:
-                out_indptr.append(len(out_indices))
-                continue
-
-            if rows.size > k_max:
-                keep = np.argpartition(vals, -k_max)[-k_max:]
-                rows = rows[keep]
-                vals = vals[keep]
-
-            # Keep by descending similarity so higher scores appear first.
-            order = np.argsort(vals)[::-1]
-            rows = rows[order]
-            vals = vals[order]
-
-            out_indices.extend(rows.tolist())
-            out_data.extend(vals.astype(np.float32, copy=False).tolist())
-            out_indptr.append(len(out_indices))
-
-        if (b + 1) % 100 == 0 or b + 1 == n_blocks:
-            print(
-                f"[TrackNeighbourhood] blockwise top-k progress: {b+1}/{n_blocks} blocks"
-            )
-
-    s_csc = scipy.sparse.csc_matrix(
-        (
-            np.asarray(out_data, dtype=np.float32),
-            np.asarray(out_indices, dtype=np.int32),
-            np.asarray(out_indptr, dtype=np.int64),
-        ),
-        shape=(t, t),
-        dtype=np.float32,
-    )
-    s_csc.eliminate_zeros()
-    return s_csc.tocsr()
-
-
 def _load_or_compute_s(
-    r_cos: csr_matrix,
+    r: csr_matrix,
     k_max: int,
     use_idf: bool,
     cache_dir: str,
+    chunk_size: int = 1000,
+    idf: np.ndarray | None = None,
 ) -> csr_matrix:
     """
-    Load or compute  S = topk_cols( R_cosᵀ @ R_cos,  k_max ).
+    Load or compute S in memory-safe chunks:
+        1) optional IDF column scaling
+        2) column-wise L2 normalization (cosine-ready)
+        3) chunked multiplication R_cos.T @ R_cos[:, start:end]
+        4) immediate top-k filter per chunk
+        5) sparse hstack of all filtered chunks
 
     Cache filename:  RtR_k{k_max}_idf{use_idf}.npz   +   corresponding meta
     Cache is invalidated when R's checksum changes.
     """
+    r_work = r.tocsr().astype(np.float32)
+    if use_idf:
+        if idf is None:
+            track_freq = np.asarray(r_work.astype(bool).sum(axis=0), dtype=np.float32).flatten()
+            track_freq[track_freq == 0] = 1.0
+            idf = 1.0 / track_freq
+        r_work = r_work @ diags(idf, format="csr")
+
+    r_cos = normalize(r_work, axis=0, norm="l2", copy=False)
+    if not scipy.sparse.isspmatrix_csr(r_cos):
+        r_cos = r_cos.tocsr()
+
     cache_dir = pathlib.Path(cache_dir)
     cache_dir.mkdir(parents=True, exist_ok=True)
 
@@ -157,13 +100,61 @@ def _load_or_compute_s(
         print(f"[TrackNeighbourhood] Checksum mismatch — recomputing S (k_max={k_max})")
 
     # ── compute ────────────────────────────────────────────────────────
-    print(
-        f"[TrackNeighbourhood] Computing S with blockwise cosine top-k (k_max={k_max})  R_cos={r_cos.shape} ..."
-    )
+    print(f"[TrackNeighbourhood] Computing S in chunks (k_max={k_max}, chunk_size={chunk_size})  R_cos={r_cos.shape} ...")
     t0 = time.time()
-    S = _compute_topk_cosine_blockwise(r_cos, k_max=k_max, block_size=16)
+    t = r_cos.shape[1]
+    n_chunks = (t + chunk_size - 1) // chunk_size
+
+    # Build CSC buffers directly to avoid high peak RAM from hstack(chunks).
+    out_indices = []
+    out_data = []
+    out_indptr = [0]
+
+    for chunk_idx, start in enumerate(range(0, t, chunk_size), start=1):
+        end = min(start + chunk_size, t)
+
+        # Similarity of all tracks vs current chunk only.
+        chunk_s = (r_cos.T @ r_cos[:, start:end]).tocsr()
+
+        # Keep top-k per chunk column immediately to cap memory.
+        chunk_s = topk_cols(chunk_s, k_max)
+
+        # Append this filtered block to global CSC buffers column by column.
+        chunk_csc = chunk_s.tocsc()
+        for local_col in range(end - start):
+            global_col = start + local_col
+            c0 = chunk_csc.indptr[local_col]
+            c1 = chunk_csc.indptr[local_col + 1]
+
+            rows = chunk_csc.indices[c0:c1]
+            vals = chunk_csc.data[c0:c1]
+
+            # Optional: drop self-similarity to keep only true neighbours.
+            if rows.size:
+                mask = rows != global_col
+                rows = rows[mask]
+                vals = vals[mask]
+
+            out_indices.extend(rows.tolist())
+            out_data.extend(vals.astype(np.float32, copy=False).tolist())
+            out_indptr.append(len(out_indices))
+
+        if chunk_idx % 10 == 0 or chunk_idx == n_chunks:
+            print(f"[TrackNeighbourhood] chunk progress: {chunk_idx}/{n_chunks}")
+
+    s_csc = scipy.sparse.csc_matrix(
+        (
+            np.asarray(out_data, dtype=np.float32),
+            np.asarray(out_indices, dtype=np.int32),
+            np.asarray(out_indptr, dtype=np.int64),
+        ),
+        shape=(t, t),
+        dtype=np.float32,
+    )
+    s_csc.eliminate_zeros()
+    S = s_csc.tocsr()
     print(
-        f"[TrackNeighbourhood] blockwise top-k done in {time.time()-t0:.2f}s  nnz={S.nnz:,}"
+        f"[TrackNeighbourhood] chunked top-k done in {time.time()-t0:.2f}s  nnz={S.nnz:,}"
     )
 
     # ── save ───────────────────────────────────────────────────────────
@@ -176,6 +167,7 @@ def _load_or_compute_s(
                 "use_idf": use_idf,
                 "shape": S.shape,
                 "nnz": S.nnz,
+                "chunk_size": chunk_size,
             },
             f,
         )
@@ -208,25 +200,25 @@ class TrackNeighbourhoodRecommender(BaseRecommender):
         self.col_to_track = {v: u for u, v in track_to_col.items()}
         self.R = r.tocsr().astype(np.float32)
 
-        # Optional IDF weighting before cosine normalization.
+        # Query weighting uses the same optional IDF choice as training similarities.
         if self.use_idf:
             track_freq = np.asarray(
                 self.R.astype(bool).sum(axis=0), dtype=np.float32
             ).flatten()
             track_freq[track_freq == 0] = 1.0
             self.idf = 1.0 / track_freq
-            r_work = self.R @ diags(self.idf, format="csr")
         else:
             self.idf = np.ones(self.R.shape[1], dtype=np.float32)
-            r_work = self.R
-
-        # Column-wise normalization: cosine similarities from R_cos.T @ R_cos.
-        r_cos = normalize(r_work, axis=0, norm="l2", copy=False)
-        if not scipy.sparse.isspmatrix_csr(r_cos):
-            r_cos = r_cos.tocsr()
 
         # Load or compute a fixed-size similarity cache and recort at inference.
-        self.S = _load_or_compute_s(r_cos, self.k_max, self.use_idf, cache_dir)
+        self.S = _load_or_compute_s(
+            self.R,
+            self.k_max,
+            self.use_idf,
+            cache_dir,
+            chunk_size=1000,
+            idf=self.idf,
+        )
         self._S_runtime_k = None
         self._S_runtime = None
 
@@ -277,24 +269,41 @@ class TrackNeighbourhoodRecommender(BaseRecommender):
             self._S_runtime = topk_cols(self.S, k_runtime)
             self._S_runtime_k = k_runtime
 
-        scores = (b_idf @ self._S_runtime).toarray()  # (Q × T) dense float32
+        scores = (b_idf @ self._S_runtime).tocsr()  # (Q × T) sparse float32
 
         # ── 3.  Zero seed tracks, extract top-n per query ──────────────
         results = []
         for q_idx, cols in enumerate(seed_cols_per_q):
-            row = scores[q_idx]
-            for c in cols:
-                row[c] = 0.0
+            start = scores.indptr[q_idx]
+            end = scores.indptr[q_idx + 1]
 
-            n_pos = int((row > 0).sum())
-            if n_pos == 0:
+            cand_cols = scores.indices[start:end]
+            cand_vals = scores.data[start:end]
+
+            if cand_cols.size == 0:
                 results.append([])
                 continue
 
-            n = min(top_n, n_pos)
-            top_c = np.argpartition(row, -n)[-n:]
-            top_c = top_c[np.argsort(row[top_c])[::-1]]
-            results.append([self.col_to_track[c] for c in top_c])
+            # Remove seed tracks from the candidate list.
+            if cols:
+                seed_set = set(cols)
+                keep_mask = np.fromiter(
+                    (c not in seed_set for c in cand_cols),
+                    dtype=bool,
+                    count=cand_cols.size,
+                )
+                cand_cols = cand_cols[keep_mask]
+                cand_vals = cand_vals[keep_mask]
+
+            if cand_cols.size == 0:
+                results.append([])
+                continue
+
+            n = min(top_n, cand_cols.size)
+            take = np.argpartition(cand_vals, -n)[-n:]
+            order = np.argsort(cand_vals[take])[::-1]
+            top_cols = cand_cols[take][order]
+            results.append([self.col_to_track[c] for c in top_cols])
 
         return results
 

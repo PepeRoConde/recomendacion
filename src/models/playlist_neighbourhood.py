@@ -4,6 +4,7 @@ playlist_neighbourhood.py  —  Playlist-neighbourhood collaborative filter.
 Batch inference formula
 -----------------------
 Let  B  (Q × T)  be the query matrix built from seed URIs.
+Implementation uses batched inference and builds Bᵀ directly in CSC.
 
     1.  C        = R @ Bᵀ           (P × Q)   overlap of every training playlist
                                                with every query playlist
@@ -13,7 +14,9 @@ Let  B  (Q × T)  be the query matrix built from seed URIs.
 Containment filtering is handled at build time by zero_contained(R) — no
 per-query containment check is needed here.
 
-Cold start: a zero row in B produces a zero column in C → zero score row in Ŝ.
+Cold start: when a query has no valid seed tracks (or no remaining candidates
+after seed filtering), recommendations fall back to the global popularity
+baseline.
 """
 
 import numpy as np
@@ -26,6 +29,17 @@ from .theta import topk_cols
 
 
 class PlaylistNeighbourhoodRecommender(BaseRecommender):
+    def _recommend_popularity_fallback(self, seed_cols: list[int], top_n: int) -> list[str]:
+        seed_set = set(seed_cols)
+        recs = []
+        for c in self.pop_order:
+            if c in seed_set:
+                continue
+            recs.append(self.col_to_track[c])
+            if len(recs) == top_n:
+                break
+        return recs
+
     def fit(
         self,
         r: csr_matrix,
@@ -45,6 +59,8 @@ class PlaylistNeighbourhoodRecommender(BaseRecommender):
         self.k = k
         self.track_to_col = track_to_col
         self.col_to_track = {v: u for u, v in track_to_col.items()}
+        pop_counts = np.asarray(r.astype(bool).sum(axis=0), dtype=np.int64).flatten()
+        self.pop_order = np.argsort(pop_counts)[::-1]
         self.R = r.tocsr().astype(np.float32)
         self.R = normalize(self.R, axis=1, norm="l2", copy=False)
         if not isinstance(self.R, csr_matrix):
@@ -96,7 +112,12 @@ class PlaylistNeighbourhoodRecommender(BaseRecommender):
 
             # Cold-start batch: all rows empty.
             if not bt_rows:
-                results.extend([[] for _ in seeds_batch])
+                results.extend(
+                    [
+                        self._recommend_popularity_fallback(seed_cols, top_n)
+                        for seed_cols in seed_cols_per_q
+                    ]
+                )
                 continue
 
             # Build B^T directly in CSC: shape (T x q)
@@ -126,7 +147,7 @@ class PlaylistNeighbourhoodRecommender(BaseRecommender):
                 cand_vals = row.data
 
                 if cand_cols.size == 0:
-                    results.append([])
+                    results.append(self._recommend_popularity_fallback(cols, top_n))
                     continue
 
                 # Remove tracks already present in the seed playlist.
@@ -141,7 +162,7 @@ class PlaylistNeighbourhoodRecommender(BaseRecommender):
                     cand_vals = cand_vals[keep_mask]
 
                 if cand_cols.size == 0:
-                    results.append([])
+                    results.append(self._recommend_popularity_fallback(cols, top_n))
                     continue
 
                 n = min(top_n, cand_cols.size)

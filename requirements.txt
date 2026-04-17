@@ -3,3 +3,4 @@ scipy
 tqdm
 scikit-learn
 pre-commit
+pynndescent

@@ -5,6 +5,7 @@ from src.utils.carga_o_construye_matriz import carga_o_construye_matriz
 
 from src.models.popularity import PopularityRecommender
 from src.models.playlist_neighbourhood import PlaylistNeighbourhoodRecommender
+from src.models.pure_svd import PureSVDRecommender
 from src.models.track_neighbourhood import TrackNeighbourhoodRecommender
 from src.evaluation.evaluate import load_eval, evaluate
 from src.evaluation.logging import print_results, write_results
@@ -13,6 +14,7 @@ from src.evaluation.logging import print_results, write_results
 MODELOS = {
     "popularity": PopularityRecommender,
     "playlist-neighbourhood": PlaylistNeighbourhoodRecommender,
+    "pure-svd": PureSVDRecommender,
     "track-neighbourhood": TrackNeighbourhoodRecommender,
 }
 
@@ -25,7 +27,7 @@ def parse_args():
         "--train-dir",
         metavar="DIR",
         default=None,
-        help="Ruta aos JSONs de MPD. Só necesario a primeira vez (cando non hai caché).",
+        help="Ruta aos JSONs descomprimidos de MPD (mpd.slice.*.json). Só necesario a primeira vez (cando non hai caché).",
     )
     p.add_argument(
         "--data-dir",
@@ -57,13 +59,29 @@ def parse_args():
         action="store_true",
         help="Activa ponderación IDF (default: False)",
     )
+    p.add_argument(
+        "--folding-in",
+        action="store_true",
+        help="Activa o modo cold-start puro do PureSVD (default: False)",
+    )
+    p.add_argument(
+        "--use-ann",
+        action="store_true",
+        help="Activa recuperación aproximada de candidatos con HNSW sobre PureSVD (requiere folding-in)",
+    )
+    p.add_argument(
+        "--ann-candidates",
+        type=int,
+        default=20000,
+        help="Número de candidatos ANN por playlist antes del reranking exacto (default: 20000)",
+    )
 
     # ── evaluation ────────────────────────────────────────────────────
     p.add_argument(
         "--eval-dir",
         metavar="DIR",
         default=None,
-        help="Directorio con test_input_playlists.json e test_eval_playlists.json",
+        help="Directorio con test_input_playlists.json e test_eval_playlists.json descomprimidos",
     )
     p.add_argument(
         "--top-n",
@@ -93,6 +111,9 @@ def main():
         k=args.k,
         cache_dir=args.data_dir,
         use_idf=args.use_idf,
+        folding_in=args.folding_in,
+        use_ann=args.use_ann,
+        ann_candidates=args.ann_candidates,
     )
     print(f"Tardouse {time.time()-t0:.3f}s en axustar o modelo '{modelo.name}'")
 

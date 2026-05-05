@@ -52,8 +52,9 @@ def load_or_compute_Stt(R: csr_matrix, cache_dir: str = "data") -> csr_matrix:
     cache_dir = pathlib.Path(cache_dir)
     cache_dir.mkdir(parents=True, exist_ok=True)
 
-    npz_path = cache_dir / "gram_tt.npz"
-    meta_path = cache_dir / "gram_tt_meta.pkl"
+    T = R.shape[1]
+    npz_path = cache_dir / f"gram_tt_{T}.npz"
+    meta_path = cache_dir / f"gram_tt_{T}_meta.pkl"
 
     R = R.tocsr().astype(np.float32)
     checksum = _checksum(R)
@@ -76,22 +77,16 @@ def load_or_compute_Stt(R: csr_matrix, cache_dir: str = "data") -> csr_matrix:
     # ── compute ────────────────────────────────────────────────────────
     print(f"[gram_cache] Calculando S_tt = Rᵀ R  (R shape={R.shape}) ...")
     t = time.time()
-    S = R.T @ R
+    S = (R.T @ R).tocsr()
     print(
         f"[gram_cache] Calculado en {time.time()-t:.2f}s  "
         f"shape={S.shape}  nnz={S.nnz:,}  "
         f"densidad={S.nnz / (S.shape[0] * S.shape[1]):.2e}"
     )
 
-    if not scipy.sparse.issparse(S):
-        t0 = time.time()
-        S = S.tocsr()
-        print(f"tardou {time.time() - t0:.3}s en sparsificarse")
-
     # ── save ───────────────────────────────────────────────────────────
     scipy.sparse.save_npz(str(npz_path), S)
     with open(meta_path, "wb") as f:
         pickle.dump({"checksum": checksum, "shape": S.shape, "nnz": S.nnz}, f)
     print(f"[gram_cache] Guardado en {npz_path}")
-
     return S

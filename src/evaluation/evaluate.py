@@ -55,7 +55,7 @@ def evaluate(model, ground_truth, pid_to_uri, pid_to_num_samples, top_n=500):
     pids = list(ground_truth.keys())
     seeds = [pid_to_uri.get(pid, set()) for pid in pids]
 
-    print(f"Evaluando o modelo {model.name} com {len(pids):,} playlists ...")
+    print(f"Evaluando o modelo {model.name} con {len(pids):,} playlists de test...")
     inicio = time.time()
     all_recs = model.recommend_batch(seeds, top_n=top_n)  # list[list[str]]
     print(f"... tardou {time.time() - inicio:.3f}s")
@@ -89,20 +89,3 @@ def evaluate(model, ground_truth, pid_to_uri, pid_to_num_samples, top_n=500):
         for g in sorted(group_count)
     }
     return overall, by_group
-
-
-def print_results(overall, by_group, top_n):
-    w = 72
-    print(f"\n{'─' * w}")
-    print(
-        f"  {'samples':>8}  {'R-Prec@'+str(top_n):>12}  "
-        f"{'NDCG@'+str(top_n):>12}  {'Clicks':>8}  {'n':>7}"
-    )
-    print(f"{'─' * w}")
-    for g, (rp, ng, cl, cnt) in by_group.items():
-        print(f"  {g:>8}  {rp:>12.4f}  {ng:>12.4f}  {cl:>8.4f}  {cnt:>7,}")
-    print(f"{'─' * w}")
-    rp, ng, cl = overall
-    n = sum(cnt for _, _, _, cnt in by_group.values())
-    print(f"  {'overall':>8}  {rp:>12.4f}  {ng:>12.4f}  {cl:>8.4f}  {n:>7,}")
-    print(f"{'─' * w}\n")

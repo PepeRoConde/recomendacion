@@ -15,7 +15,7 @@ def r_precision(predicted, relevant_set):
 
 def ndcg(predicted, relevant_set):
     """
-    Normalized Discounted Comulative Gain
+    Normalized Discounted Cumulative Gain
     NDCG = DCG / IDCG
     """
     if not relevant_set:

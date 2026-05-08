@@ -12,7 +12,9 @@ def _matriz_stem(data_dir: pathlib.Path, max_jsons: int) -> pathlib.Path:
     return data_dir / f"matriz_{suffix}"
 
 
-def carga_o_construye_matriz(train_dir: str, data_dir: str, max_jsons: int):
+def carga_o_construye_matriz(
+    train_dir: str, data_dir: str, max_jsons: int, max_playlists: int
+):
     """
     Load R from disk if a matrix for this max_jsons already exists,
     otherwise build it from train_dir, save it, and return it.
@@ -40,7 +42,7 @@ def carga_o_construye_matriz(train_dir: str, data_dir: str, max_jsons: int):
 
     print(f"[matriz] Non se atopou caché — construíndo desde {train_dir} ...")
     R, pid_to_row, track_to_col, track_info = construye_y_carga_matriz(
-        train_dir, max_jsons=max_jsons
+        train_dir, max_jsons=max_jsons, max_playlists=max_playlists
     )
     guarda_matriz(str(stem), R, pid_to_row, track_to_col, track_info)
     return R, pid_to_row, track_to_col, track_info

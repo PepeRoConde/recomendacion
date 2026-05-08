@@ -8,7 +8,7 @@ from tqdm import tqdm
 from src.models.theta import zero_contained
 
 
-def construye_y_carga_matriz(path, max_jsons=5):
+def construye_y_carga_matriz(path, max_jsons=5, max_playlists=None):
     """
     Loads the MPD dataset, builds the sparse matrix in a single pass,
     and filters out contained rows.
@@ -47,7 +47,9 @@ def construye_y_carga_matriz(path, max_jsons=5):
         with open(fullpath, encoding="utf-8") as f:
             mpd_slice = json.load(f)
 
-        for playlist in mpd_slice["playlists"]:
+        for idx, playlist in enumerate(mpd_slice["playlists"]):
+            if max_playlists and idx > max_playlists:
+                break
             pid = playlist["pid"]
             pid_to_row_raw[pid] = row_idx
             pids_list.append(pid)

@@ -3,20 +3,9 @@ import time
 
 from src.utils.carga_o_construye_matriz import carga_o_construye_matriz
 
-from src.models.popularity import PopularityRecommender
-from src.models.playlist_neighbourhood import PlaylistNeighbourhoodRecommender
-from src.models.pure_svd import PureSVDRecommender
-from src.models.track_neighbourhood import TrackNeighbourhoodRecommender
+from src.models import models
 from src.evaluation.evaluate import load_eval, evaluate
 from src.evaluation.logging import print_results, write_results
-
-
-MODELOS = {
-    "popularity": PopularityRecommender,
-    "playlist-neighbourhood": PlaylistNeighbourhoodRecommender,
-    "pure-svd": PureSVDRecommender,
-    "track-neighbourhood": TrackNeighbourhoodRecommender,
-}
 
 
 def parse_args():
@@ -41,11 +30,17 @@ def parse_args():
         default=-1,
         help="Número de JSONs a usar (-1 = todos). Determina o nome do ficheiro de caché.",
     )
+    p.add_argument(
+        "--max_playlists",
+        type=int,
+        default=None,
+        help="Número de playlists por JSON, por defecto todas",
+    )
 
     # ── model ─────────────────────────────────────────────────────────
     p.add_argument(
         "--modelo",
-        choices=MODELOS.keys(),
+        choices=models.keys(),
         default="popularity",
     )
     p.add_argument(
@@ -89,6 +84,24 @@ def parse_args():
         default=500,
         help="Canciones a recomendar por playlist (default: 500)",
     )
+    p.add_argument(
+        "--epochs",
+        type=int,
+        default=10,
+        help="Épocas para os algoritmos iterativos SSLIM e FISM",
+    )
+    p.add_argument(
+        "--dim",
+        type=int,
+        default=30,
+        help="Dimensión pequena das matrices Q e T do FISM",
+    )
+    p.add_argument(
+        "--lr",
+        type=float,
+        default=0.01,
+        help="Tasa de aprendizaxe para SSLIM e FISM",
+    )
 
     return p.parse_args()
 
@@ -98,22 +111,25 @@ def main():
 
     # ── load / build R ────────────────────────────────────────────────
     R, _pid_to_row, track_to_col, _track_info = carga_o_construye_matriz(
-        args.train_dir, args.data_dir, args.max_jsons
+        args.train_dir, args.data_dir, args.max_jsons, args.max_playlists
     )
 
     # ── fit ───────────────────────────────────────────────────────────
-    modelo = MODELOS[args.modelo]()
+    modelo = models[args.modelo]()
 
     t0 = time.time()
     modelo.fit(
-        R,
-        track_to_col,
-        k=args.k,
-        cache_dir=args.data_dir,
-        use_idf=args.use_idf,
-        folding_in=args.folding_in,
-        use_ann=args.use_ann,
-        ann_candidates=args.ann_candidates,
+        R=R,
+        track_to_col=track_to_col,
+        epochs=args.epochs,
+        lr=args.lr,
+        dim=args.dim,
+        #      k=args.k,
+        #      cache_dir=args.data_dir,
+        #      use_idf=args.use_idf,
+        #      folding_in=args.folding_in,
+        #      use_ann=args.use_ann,
+        #      ann_candidates=args.ann_candidates,
     )
     print(f"Tardouse {time.time()-t0:.3f}s en axustar o modelo '{modelo.name}'")
 

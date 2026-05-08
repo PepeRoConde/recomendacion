@@ -102,6 +102,11 @@ def parse_args():
         default=0.01,
         help="Tasa de aprendizaxe para SSLIM e FISM",
     )
+    p.add_argument(
+        "--positiva",
+        action="store_true",
+        help="Tasa de aprendizaxe para SSLIM e FISM",
+    )
 
     return p.parse_args()
 
@@ -124,6 +129,7 @@ def main():
         epochs=args.epochs,
         lr=args.lr,
         dim=args.dim,
+        positiva=args.positiva,
         #      k=args.k,
         #      cache_dir=args.data_dir,
         #      use_idf=args.use_idf,

@@ -48,8 +48,6 @@ def construye_y_carga_matriz(path, max_jsons=5, max_playlists=None):
             mpd_slice = json.load(f)
 
         for idx, playlist in enumerate(mpd_slice["playlists"]):
-            if max_playlists and idx > max_playlists:
-                break
             pid = playlist["pid"]
             pid_to_row_raw[pid] = row_idx
             pids_list.append(pid)
@@ -63,6 +61,8 @@ def construye_y_carga_matriz(path, max_jsons=5, max_playlists=None):
                 cols.append(track_to_col[uri])
 
             row_idx += 1
+            if max_playlists and row_idx > max_playlists:
+                break
 
     print(f"Parseáronse {len(filenames)} ficheiros en {time.time() - inicio:.3f}s")
 

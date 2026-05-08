@@ -12,14 +12,15 @@ from src.models.base import BaseRecommender
 
 class SSLIM(BaseRecommender):
     # pide dim para ser compatible  pero me parece una chambonada hacerlo asi
-    def fit(self, R, track_to_col, epochs, dim=0, lr=0.01):
+    def fit(self, R, track_to_col, epochs, dim=0, lr=0.01, positiva=False):
         @tf.function
-        def train_step(R, S, optiomizer, lmb1=0.5, lmb2=0.5):
+        def train_step(R, S, optimizer, lmb1=1, lmb2=1, lmbdiag=1):
             with tf.GradientTape() as t:
+                diag = tf.norm(tf.linalg.diag_part(S), ord=2)
                 RS = tf.sparse.sparse_dense_matmul(R, S)
                 residuo = tf.norm(tf.sparse.add(R, -RS), ord=2)
                 l1, l2 = tf.norm(S, ord=1), tf.norm(S, ord=2)
-                perdida = residuo + lmb1 * l1 + lmb2 * l2
+                perdida = residuo + lmb1 * l1 + lmb2 * l2 + lmbdiag * diag
 
             g = t.gradient(perdida, S)
             optimizer.apply_gradients([(g, S)])
@@ -28,11 +29,9 @@ class SSLIM(BaseRecommender):
         self.R = matriz_a_tensor(R)  # ambas dispersas, claro
         self.track_to_col = track_to_col
         self.col_to_track = {v: u for u, v in track_to_col.items()}
-        self.S = inicializa(n=self.R.numcol, matriz="S")
+        self.S = inicializa(n=self.R.numcol, matriz="S", positiva=positiva)
 
-        optimizer = tf.keras.optimizers.SGD(
-            learning_rate=lr,
-        )
+        optimizer = tf.keras.optimizers.SGD(learning_rate=lr)
 
         print("Entramos no bucle de adestramento, isto vai levar...")
         progreso = tqdm(range(epochs))
@@ -40,40 +39,10 @@ class SSLIM(BaseRecommender):
             perdida = train_step(self.R, self.S, optimizer)
             progreso.set_description(f"Época {i} || Pérdida {perdida.numpy().sum()}")
 
-    def recommend_batch(self, seeds, top_n=500) -> list[list[str]]:
-        def _recommend_popularity_fallback(seed_cols: list[int]) -> list[str]:
-            if not hasattr(self, "pop_order"):
-                return []
-            seed_set = set(seed_cols)
-            recs = []
-            for c in self.pop_order:
-                if c in seed_set:
-                    continue
-                recs.append(self.col_to_track[c])
-                if len(recs) == top_n:
-                    break
-            return recs
-
-        def _fill_with_popularity(seed_cols: list[int], recs: list[str]) -> list[str]:
-            if not hasattr(self, "pop_order"):
-                return recs
-            seed_set = set(seed_cols)
-            rec_set = set(recs)
-            for c in self.pop_order:
-                uri = self.col_to_track[c]
-                if c in seed_set or uri in rec_set:
-                    continue
-                recs.append(uri)
-                rec_set.add(uri)
-                if len(recs) == top_n:
-                    break
-            return recs
-
+    def recommend_batch(self, seeds, top_n=500, batch_size=200) -> list[list[str]]:
         n_tracks = int(self.S.shape[0])
-        n_tracks = int(self.R.shape[1])
 
         results: list[list[str]] = []
-        batch_size = 200
 
         for start in range(0, len(seeds), batch_size):
             end = min(start + batch_size, len(seeds))
@@ -92,12 +61,7 @@ class SSLIM(BaseRecommender):
                     cols.append(c)
 
             if not rows:
-                results.extend(
-                    [
-                        _recommend_popularity_fallback(seed_cols)
-                        for seed_cols in seed_cols_per_q
-                    ]
-                )
+                print("no hay rows")
                 continue
 
             data = np.ones(len(rows), dtype=np.float32)
@@ -114,10 +78,6 @@ class SSLIM(BaseRecommender):
                     row_scores = row_scores.copy()
                     row_scores[seed_cols] = -np.inf
 
-                if not np.isfinite(row_scores).any():
-                    results.append(_recommend_popularity_fallback(seed_cols))
-                    continue
-
                 if top_n >= row_scores.size:
                     top_cols = np.argsort(row_scores)[::-1]
                 else:
@@ -130,15 +90,12 @@ class SSLIM(BaseRecommender):
                     if np.isfinite(row_scores[int(c)])
                 ]
 
-                if len(recs) < top_n:
-                    recs = _fill_with_popularity(seed_cols, recs)
-
                 results.append(recs[:top_n])
 
         return results
 
     def recommend(self, seed_uris, top_n=500) -> list[str]:
-        return self.recommend_batch([seed_uris], top_n=top_n)[0]
+        return self.recommend_batch([seed_uris], top_n=top_n, batch_size=200)[0]
 
     @property
     def name(self) -> str:
